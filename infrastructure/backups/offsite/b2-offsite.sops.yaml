@@ -1,0 +1,12 @@
+# Template. The live cluster keeps this Secret SOPS-encrypted with age; this public copy has
+# placeholders instead. Fill in each REPLACE_ME, then: sops --encrypt --in-place <this file>
+# (the rules are in .sops.yaml).
+apiVersion: v1
+kind: Secret
+metadata:
+    name: b2-offsite
+type: Opaque
+stringData:
+    key_id: REPLACE_ME
+    application_key: REPLACE_ME
+    bucket: REPLACE_ME

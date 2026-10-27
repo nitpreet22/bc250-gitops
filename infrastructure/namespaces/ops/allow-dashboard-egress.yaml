@@ -1,0 +1,28 @@
+# The running ops dashboard (tier=service, not the ops dev pod) reads from: VictoriaMetrics and
+# Alertmanager, the Kubernetes API (via its read-only
+# ServiceAccount), and the homelab-agent on each board (13_home_server_dashboard, port 9877).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dashboard-egress
+spec:
+  podSelector:
+    matchLabels: {homelab.lan/tier: service}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+    - to:
+        - ipBlock: {cidr: 192.168.1.145/32}
+        - ipBlock: {cidr: 192.168.1.106/32}
+        - ipBlock: {cidr: 192.168.1.172/32}
+      ports:
+        - {protocol: TCP, port: 6443}    # Kubernetes API (the kubernetes Service resolves to bc250-2)
+        - {protocol: TCP, port: 9877}    # homelab-agent on each board
+    # Service health checks (hub.json "endpoints") each add a rule here for their service's port.
+    # The Pi's homelab-agent.
+    - to:
+        - ipBlock: {cidr: 192.168.1.66/32}
+      ports:
+        - {protocol: TCP, port: 9877}

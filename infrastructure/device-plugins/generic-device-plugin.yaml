@@ -1,0 +1,67 @@
+# Exposes each board's GPU and uinput as countable resources with exactly one unit each, so only
+# one pod per board holds the whole GPU and GPU Jobs queue instead of sharing it (plan: "GPU").
+# Pods ask for them with:
+#   resources: {limits: {devic.es/gpu: 1, devic.es/uinput: 1}}
+# The same GPU's render node is also shared as devic.es/render (render-node-plugin.yaml), so a
+# devic.es/gpu holder can still share the GPU with desktops on its board. Until 2026-11 this ran
+# only on bc250-1, the dedicated GPU board (role gpu-lab); there is no such board now.
+# Resource names use the plugin's default domain, devic.es (older docs say squat.ai).
+# Source: github.com/squat/generic-device-plugin (Apache-2.0), manifests/generic-device-plugin.yaml
+# at commit f7c3291, trimmed to these two devices.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: generic-device-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: generic-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: generic-device-plugin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: generic-device-plugin
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: generic-device-plugin
+          image: squat/generic-device-plugin:f7c3291
+          args:
+            - --device
+            - |
+              name: gpu
+              groups:
+                - count: 1
+                  paths:
+                    - path: /dev/dri/card0
+                    - path: /dev/dri/renderD128
+            - --device
+            - |
+              name: uinput
+              groups:
+                - count: 1
+                  paths:
+                    - path: /dev/uinput
+          resources:
+            requests: {cpu: 10m, memory: 10Mi}
+            limits: {cpu: 50m, memory: 20Mi}
+          ports:
+            - {containerPort: 8080, name: http}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: device-plugin, mountPath: /var/lib/kubelet/device-plugins}
+            - {name: dev, mountPath: /dev}
+      volumes:
+        - name: device-plugin
+          hostPath: {path: /var/lib/kubelet/device-plugins}
+        - name: dev
+          hostPath: {path: /dev}
+  updateStrategy:
+    type: RollingUpdate

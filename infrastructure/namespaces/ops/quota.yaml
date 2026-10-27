@@ -1,0 +1,16 @@
+# Sized from the plan's memory budget; revisit after the Phase 8 load test.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: budget
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1536Mi
+    # Limits: the dashboard hub's (0.5 CPU, 128 MiB) and room for its backup and control Jobs.
+    # (Raised to 7 CPU / 9 GiB for a large dev pod; lowered again on 2026-11-10.)
+    limits.cpu: "2"
+    limits.memory: 2Gi
+    pods: "10"
+    requests.devic.es/gpu: "0"
+    requests.devic.es/uinput: "0"

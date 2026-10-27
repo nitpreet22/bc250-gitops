@@ -1,0 +1,54 @@
+# Plan "Scheduling rules", highest to lowest. Higher priority schedules first and may preempt lower
+# priority pods when a node is full. Under memory pressure the kubelet evicts pods that use more
+# than they requested first, and lower priority first among those; so live-critical pods run
+# Guaranteed (requests = limits) at the top, and batch runs at the bottom without preempting.
+# Every long-running pod names a class: a pod without one gets priority 0, below batch.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: live-critical
+value: 1000000
+description: Services that must outlive everything else under pressure (Guaranteed QoS).
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform
+value: 200000
+description: What fixing everything else depends on - Forgejo (Flux's source), the image registry, monitoring and alerting.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: public-service
+value: 100000
+description: Public websites.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: game-server
+value: 50000
+description: Game servers.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: service
+value: 20000
+description: Always-on services - the ops dashboard hub and data collectors.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: agent
+value: 10000
+description: Claude Code dev pods and Moonlight desktops.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch
+value: 100
+preemptionPolicy: Never    # waits for free capacity instead of evicting anything
+description: GPU queue Jobs and other batch work. Fills idle capacity.

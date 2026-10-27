@@ -1,0 +1,51 @@
+# Cloudflare Tunnel: the only way the websites reach the internet. Outbound connection from
+# bc250-2 to Cloudflare; Cloudflare forwards visitors to Traefik inside the cluster. No port
+# forward on the router, and it works behind CGNAT.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: cloudflared}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cloudflared, homelab.lan/tier: service}
+    spec:
+      nodeSelector: {role: brain}
+      priorityClassName: public-service
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.4
+          args: [tunnel, --no-autoupdate, --metrics, "0.0.0.0:2000", run]
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom: {secretKeyRef: {name: cloudflared-tunnel, key: token}}
+          ports:
+            - {name: metrics, containerPort: 2000}
+          livenessProbe:
+            httpGet: {path: /ready, port: metrics}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cloudflared
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: cloudflared}
+  policyTypes: [Egress]
+  egress:
+    - to:   # Cloudflare's edge
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+    - to:   # Traefik
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}

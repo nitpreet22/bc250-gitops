@@ -1,0 +1,11 @@
+# Template. The live cluster keeps this Secret SOPS-encrypted with age; this public copy has
+# placeholders instead. Fill in each REPLACE_ME, then: sops --encrypt --in-place <this file>
+# (the rules are in .sops.yaml).
+# SOPS encrypts Secret manifests named *.sops.yaml with the cluster's age key; only the data
+# fields are encrypted, so names and keys stay readable in diffs.
+# Private key: %APPDATA%\sops\age\keys.txt on the PC (back it up off-cluster; see README) and
+# the sops-age Secret in flux-system.
+creation_rules:
+  - path_regex: .*\.sops\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age18xv026l7xprd3w30ckeh2jhkjev3wemarv428syya9khsd3n34us68qyaq

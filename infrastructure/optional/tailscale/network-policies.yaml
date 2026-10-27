@@ -1,0 +1,13 @@
+# The operator and its proxies talk to Tailscale's control plane and DERP relays (internet), the
+# Kubernetes API, and the services they expose inside the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tailscale
+spec:
+  podSelector: {}
+  policyTypes: [Egress, Ingress]
+  egress:
+    - {}
+  ingress:
+    - {}

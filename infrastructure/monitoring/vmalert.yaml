@@ -1,0 +1,198 @@
+# vmalert evaluates the rules below against VictoriaMetrics and sends firing alerts to Alertmanager.
+# Alertmanager posts firing and resolved alerts to a Discord channel (webhook URL from the encrypted
+# alertmanager-discord Secret); they are also in the ops dashboard's "Recent alerts" view.
+#
+# Temperature thresholds come from 06_bc250_server/bench/RESULTS-V1.md:
+#   80 °C  sustained-load target for Tctl (all three boards hold it with the per-board CPU caps)
+#   85 °C  the SMU throttles the CPU (bc250-cpu-limits max_temp_c); the GPU throttles above ~85 °C
+#   90 °C  thermal_test.sh aborts the load (not used as an alert: 85 °C already pages)
+#
+# Counter rules compare with the value 15 minutes earlier (x - x offset 15m) instead of increase()
+# or changes(): VictoriaMetrics counts a new series' first sample in both, which would fire them
+# for 15 minutes after every boot. A counter reset (reboot) gives a negative difference: no alert.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vmalert
+spec:
+  interval: 1h
+  dependsOn:
+    - name: victoria-metrics
+  chart:
+    spec:
+      chart: victoria-metrics-alert
+      version: 0.52.0           # vmalert v1.155.0
+      sourceRef: {kind: HelmRepository, name: victoriametrics, namespace: flux-system}
+  values:
+    server:
+      fullnameOverride: vmalert
+      nodeSelector: {role: brain}
+      priorityClassName: platform
+      datasource:
+        url: http://vmsingle.monitoring.svc:8428
+      resources:
+        requests: {cpu: 20m, memory: 64Mi}
+        limits: {cpu: 200m, memory: 128Mi}
+      config:
+        alerts:
+          groups:
+            - name: bc250-thermals
+              rules:
+                - alert: BoardCPUHot
+                  expr: max by (node) (node_hwmon_temp_celsius * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="k10temp"}) >= 80
+                  for: 2m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }} CPU Tctl {{ $value | humanize }} °C, above the 80 °C sustained-load target"
+                - alert: BoardCPUCritical
+                  expr: max by (node) (node_hwmon_temp_celsius * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="k10temp"}) >= 85
+                  for: 1m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "{{ $labels.node }} CPU Tctl {{ $value | humanize }} °C: the SMU is throttling (85 °C limit)"
+                - alert: BoardGPUHot
+                  expr: max by (node) (node_hwmon_temp_celsius * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="amdgpu"}) >= 80
+                  for: 2m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }} GPU edge {{ $value | humanize }} °C, above the 80 °C target"
+                - alert: BoardGPUCritical
+                  expr: max by (node) (node_hwmon_temp_celsius * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="amdgpu"}) >= 85
+                  for: 1m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "{{ $labels.node }} GPU edge {{ $value | humanize }} °C: at the GPU's throttle point"
+                - alert: BoardNVMeHot
+                  expr: max by (node) (node_hwmon_temp_celsius * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="nvme"}) >= 70
+                  for: 5m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }} NVMe {{ $value | humanize }} °C"
+                - alert: BoardFanStopped
+                  expr: max by (node) (node_hwmon_fan_rpm * on (instance, chip) group_left (chip_name) node_hwmon_chip_names{chip_name="nct6686"}) == 0
+                  for: 2m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "{{ $labels.node }} reports 0 RPM on every fan header (fans run from the hub on fan2)"
+            - name: cluster-network
+              rules:
+                - alert: ClusterNICDown
+                  expr: node_network_up{device="lan0"} == 0
+                  for: 1m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "{{ $labels.node }}: the 2.5 GbE USB adapter (lan0) is down"
+                - alert: ClusterNICSlow
+                  expr: node_network_speed_bytes{device="lan0"} < 312500000
+                  for: 5m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }}: lan0 negotiated {{ $value | humanize1024 }}B/s, below 2.5 Gb/s"
+                - alert: ClusterNICFlapping
+                  expr: node_network_carrier_changes_total{device="lan0"} - node_network_carrier_changes_total{device="lan0"} offset 15m > 0
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }}: lan0 lost carrier in the last 15 minutes (USB reset or cable)"
+                - alert: ClusterNICErrors
+                  expr: (node_network_receive_errs_total{device="lan0"} - node_network_receive_errs_total{device="lan0"} offset 15m) + (node_network_transmit_errs_total{device="lan0"} - node_network_transmit_errs_total{device="lan0"} offset 15m) > 0
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }}: lan0 errors in the last 15 minutes"
+            - name: cluster-health
+              rules:
+                # bc250-1 and bc250-3 are powered off whenever they aren't needed (taint
+                # homelab.lan/on-demand, README "Node power"), so a board that's missing or not
+                # Ready is only an alert for the always-on board. Failed wake-ups are reported by
+                # the power controller itself.
+                - alert: BoardMissing
+                  expr: absent(node_uname_info{node="bc250-2"})
+                  for: 2m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "bc250-2, the always-on board, reports no metrics"
+                - alert: NodeNotReady
+                  # The scrape job adds its own "node"/"namespace" labels, so kube-state-metrics' arrive as exported_*.
+                  expr: >-
+                    max by (exported_node) (kube_node_status_condition{condition="Ready", status="true"}) == 0
+                    unless on (exported_node) kube_node_spec_taint{key="homelab.lan/on-demand"}
+                  for: 2m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "{{ $labels.exported_node }} is not Ready"
+                - alert: NodeMemoryLow
+                  expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+                  for: 5m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }} has under 10 % memory available"
+                - alert: NodeDiskFilling
+                  expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+                  for: 10m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.node }} root filesystem under 15 % free"
+                # The USB hard drive on bc250-2 (bootstrap/06-backup-disk.sh): the restic
+                # repositories.
+                - alert: BackupDiskFilling
+                  expr: node_filesystem_avail_bytes{node="bc250-2", mountpoint="/srv/hdd"} / node_filesystem_size_bytes{node="bc250-2", mountpoint="/srv/hdd"} < 0.10
+                  for: 10m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "bc250-2 backup drive (/srv/hdd) under 10 % free"
+                - alert: BackupDiskMissing
+                  # Unplugged or failed to mount: the restic server waits in
+                  # ContainerCreating until it's back. (Also fires while the whole board is down.)
+                  expr: absent(node_filesystem_size_bytes{node="bc250-2", mountpoint="/srv/hdd"})
+                  for: 5m
+                  labels: {severity: critical}
+                  annotations:
+                    summary: "bc250-2 backup drive (/srv/hdd) is not mounted"
+                - alert: PodCrashLooping
+                  expr: sum by (exported_namespace, pod) (kube_pod_container_status_restarts_total - kube_pod_container_status_restarts_total offset 15m) > 3
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.exported_namespace }}/{{ $labels.pod }} restarted {{ $value | humanize }} times in 15 minutes"
+                - alert: BackupStale
+                  # The backup CronJobs and the off-site copy all run daily; 26 h allows for one slow run.
+                  # A CronJob that has never succeeded has no series yet, so it can't fire this.
+                  expr: time() - kube_cronjob_status_last_successful_time{cronjob=~".*-backup|offsite-sync"} > 26 * 3600
+                  for: 10m
+                  labels: {severity: warning}
+                  annotations:
+                    summary: "{{ $labels.exported_namespace }}/{{ $labels.cronjob }} last succeeded {{ $value | humanizeDuration }} ago"
+    alertmanager:
+      enabled: true
+      fullnameOverride: alertmanager
+      nodeSelector: {role: brain}
+      priorityClassName: platform
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+      # Discord: the webhook URL is a credential, so it comes from the encrypted
+      # alertmanager-discord Secret as a file, never from this config.
+      extraVolumes:
+        - name: discord
+          secret: {secretName: alertmanager-discord}
+      extraVolumeMounts:
+        - {name: discord, mountPath: /etc/alertmanager/discord, readOnly: true}
+      config:
+        global:
+          resolve_timeout: 5m
+        route:
+          receiver: discord
+          # One message per alert type and board; a still-firing alert is repeated every 12 h.
+          group_by: [alertname, node]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 12h
+        receivers:
+          - name: discord
+            discord_configs:
+              - webhook_url_file: /etc/alertmanager/discord/webhook_url
+                send_resolved: true   # also say when it's over
+                title: >-
+                  {{ if eq .Status "firing" }}🔥 FIRING{{ else }}✅ RESOLVED{{ end }}:
+                  {{ .CommonLabels.alertname }}{{ with .CommonLabels.node }} on {{ . }}{{ end }}
+                message: |-
+                  {{ range .Alerts }}{{ .Annotations.summary }}
+                  {{ end }}

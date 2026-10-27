@@ -1,0 +1,5 @@
+# Cluster-wide admission policies (kept out of the namespace folders: they are cluster-scoped).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - dev-pod-jobs.yaml

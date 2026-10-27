@@ -1,0 +1,80 @@
+# In-cluster image registry (CNCF distribution). Images are built on bc250-2 with podman and pushed
+# here, so large image transfers never cross the PC's connection (plan Phase 4).
+#
+#   push (on bc250-2):  podman push --tls-verify=false <image> 192.168.1.106:30500/<name>:<tag>
+#   pull (in manifests): image: registry.homelab.lan/<name>:<tag>
+#
+# Every board's containerd maps registry.homelab.lan to http://192.168.1.106:30500
+# (/etc/rancher/k3s/registries.yaml, written by bootstrap/02-k3s.sh). Plain HTTP on the cluster
+# network only: the NodePort is open to the boards, not to the LAN.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 40Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: registry}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: registry, homelab.lan/tier: service}
+    spec:
+      nodeSelector: {role: brain}
+      priorityClassName: platform
+      containers:
+        - name: registry
+          image: registry:3.1.2
+          env:
+            - {name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true"}
+          ports:
+            - {name: http, containerPort: 5000}
+          readinessProbe:
+            httpGet: {path: /v2/, port: http}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/registry}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: registry-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: registry}
+  ports:
+    - {name: http, port: 5000, targetPort: http, nodePort: 30500}
+---
+# containerd on the boards and podman on bc250-2 reach it through the NodePort; image builds
+# inside the cluster reach it directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-registry-clients
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: registry}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.168.1.145/32}
+        - ipBlock: {cidr: 192.168.1.106/32}
+        - ipBlock: {cidr: 192.168.1.172/32}
+        - ipBlock: {cidr: 10.42.0.0/16}
+      ports:
+        - {protocol: TCP, port: 5000}

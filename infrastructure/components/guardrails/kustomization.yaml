@@ -1,0 +1,12 @@
+# Guardrails every project namespace gets (plan: "Scheduling rules" and "Networking"):
+#   - a LimitRange, so no container ships without requests and limits;
+#   - default-deny NetworkPolicy for ingress and egress, then the allows every pod needs:
+#     cluster DNS, and metrics scraping from the monitoring namespace.
+# Namespace-specific allows live next to each namespace in infrastructure/namespaces/<ns>/.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - limit-range.yaml
+  - default-deny.yaml
+  - allow-dns.yaml
+  - allow-from-monitoring.yaml

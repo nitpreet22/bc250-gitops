@@ -1,0 +1,84 @@
+# What a Job created by a dev pod (templates/agent/components/job-runner) may contain. RBAC lets
+# the pod create Jobs; without this policy, a Job could mount any Secret in the namespace (the
+# Claude token, the other project's deploy key) or run with the dev pod's own ServiceAccount.
+#
+# Applies to Jobs created by a ServiceAccount named <project>-agent in a namespace the binding
+# lists. Jobs that Flux or an admin creates are not affected. Allowed:
+#   - priorityClassName: batch;
+#   - no ServiceAccount token (automountServiceAccountToken: false, default ServiceAccount);
+#   - volumes: emptyDir, configMap, and PersistentVolumeClaims named <project>-*;
+#   - no Secrets in env or envFrom, no privileged containers or added capabilities;
+#   - no host network, PID or IPC.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: dev-pod-jobs
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs]
+  matchConditions:
+    - name: created-by-a-dev-pod
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:' + request.namespace + ':')
+        && request.userInfo.username.endsWith('-agent')
+  variables:
+    - name: pod
+      expression: object.spec.template.spec
+    # "system:serviceaccount:ml:my-project-agent" -> "my-project-"
+    - name: projectPrefix
+      expression: >-
+        request.userInfo.username.split(':')[3].substring(0,
+          request.userInfo.username.split(':')[3].size() - size('agent'))
+    - name: containers
+      expression: >-
+        variables.pod.containers
+        + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])
+  validations:
+    - expression: has(variables.pod.priorityClassName) && variables.pod.priorityClassName == 'batch'
+      message: "Jobs from dev pods must set priorityClassName: batch"
+    - expression: >-
+        has(variables.pod.automountServiceAccountToken)
+        && variables.pod.automountServiceAccountToken == false
+        && (!has(variables.pod.serviceAccountName) || variables.pod.serviceAccountName == 'default')
+        && (!has(variables.pod.serviceAccount) || variables.pod.serviceAccount == 'default')
+      message: "Jobs from dev pods must set automountServiceAccountToken: false and use the default ServiceAccount"
+    - expression: >-
+        !has(variables.pod.volumes) || variables.pod.volumes.all(v,
+          has(v.emptyDir) || has(v.configMap)
+          || (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName.startsWith(variables.projectPrefix)))
+      messageExpression: >-
+        'Jobs from dev pods may only mount emptyDir, configMap and PersistentVolumeClaims named '
+        + variables.projectPrefix + '*'
+    - expression: >-
+        variables.containers.all(c,
+          (!has(c.envFrom) || c.envFrom.all(e, !has(e.secretRef)))
+          && (!has(c.env) || c.env.all(e, !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef))))
+      message: "Jobs from dev pods may not read Secrets"
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext)
+          || ((!has(c.securityContext.privileged) || c.securityContext.privileged == false)
+              && (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add))))
+      message: "Jobs from dev pods may not be privileged or add capabilities"
+    - expression: >-
+        !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork)
+        && !(has(variables.pod.hostPID) && variables.pod.hostPID)
+        && !(has(variables.pod.hostIPC) && variables.pod.hostIPC)
+      message: "Jobs from dev pods may not use the host network, PID or IPC namespaces"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: dev-pod-jobs
+spec:
+  policyName: dev-pod-jobs
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        # Namespaces whose dev pods use the job-runner component.
+        - {key: kubernetes.io/metadata.name, operator: In, values: [ml]}

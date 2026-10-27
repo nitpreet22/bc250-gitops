@@ -1,0 +1,6 @@
+# Dev pods (label homelab.lan/tier=dev) reach the internet (Claude, package registries,
+# Kaggle, Colab) and the in-cluster git server, but nothing else on the LAN or in the cluster.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - allow-dev-egress.yaml

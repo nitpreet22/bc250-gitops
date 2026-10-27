@@ -1,0 +1,11 @@
+# Defaults for containers that don't set their own requests/limits, and a ceiling per container.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+spec:
+  limits:
+    - type: Container
+      defaultRequest: {cpu: 50m, memory: 128Mi}
+      default: {cpu: "1", memory: 512Mi}
+      max: {memory: 10Gi}

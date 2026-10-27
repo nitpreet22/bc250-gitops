@@ -1,0 +1,48 @@
+# Nightly backup of Forgejo's volume (repos, attachments, config) to the restic server on bc250-2.
+# SQLite is copied with .backup first, so the database in the snapshot is consistent even while
+# Forgejo writes. Keeps 14 daily and 8 weekly snapshots.
+# Restore: see the runbook in the homelab README (Phase 7).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-backup
+spec:
+  schedule: "30 3 * * *"
+  timeZone: Australia/Melbourne
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: {homelab.lan/role: backup}
+        spec:
+          restartPolicy: OnFailure
+          priorityClassName: batch
+          # Forgejo's volume is node-local on bc250-2; the PV's node affinity places this pod there.
+          containers:
+            - name: backup
+              image: registry.homelab.lan/backup:2026-10-29.1   # images/backup
+              env:
+                - {name: RESTIC_REPOSITORY, value: "rest:http://restic.backups.svc:8000/forgejo"}
+                - name: RESTIC_PASSWORD
+                  valueFrom: {secretKeyRef: {name: restic-password, key: password}}
+              command:
+                - sh
+                - -euc
+                - |
+                  restic cat config >/dev/null 2>&1 || restic init
+                  sqlite3 /data/forgejo.db ".backup /tmp/forgejo.db"
+                  restic backup --host forgejo --exclude '/data/forgejo.db*' /data /tmp/forgejo.db
+                  restic forget --host forgejo --keep-daily 14 --keep-weekly 8 --prune
+                  restic snapshots --host forgejo --compact | tail -n 5
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "1", memory: 512Mi}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+          volumes:
+            - name: data
+              persistentVolumeClaim: {claimName: gitea-shared-storage}

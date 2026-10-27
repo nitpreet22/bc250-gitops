@@ -1,0 +1,76 @@
+# Off-site copy of every restic repository: each morning, after the last nightly backup
+# (06:15), rclone mirrors the REST server's repositories (/srv/hdd/restic on bc250-2's
+# USB hard drive) to a Backblaze B2 bucket.
+# The repositories are already encrypted by restic, so B2 only ever holds ciphertext and this Job
+# needs no restic passwords. Restore: README, "Restoring a backup" → "From B2".
+#
+# rclone sync also mirrors deletions (restic prune removes old packs). Deleted files are only
+# hidden in B2, not erased, and the bucket's lifecycle rule (30 days) decides how long their old
+# versions stay: that window is what saves you if the local repositories are ever damaged.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: offsite-sync
+spec:
+  schedule: "30 7 * * *"
+  timeZone: Australia/Melbourne
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: offsite-sync}
+        spec:
+          restartPolicy: OnFailure
+          priorityClassName: batch
+          nodeSelector: {role: brain}   # the REST server's repositories: /srv/hdd/restic on bc250-2
+          containers:
+            - name: sync
+              image: docker.io/rclone/rclone:1.75.2
+              env:
+                # rclone builds the "b2" remote from these variables (no config file).
+                - {name: RCLONE_CONFIG_B2_TYPE, value: b2}
+                - name: RCLONE_CONFIG_B2_ACCOUNT
+                  valueFrom: {secretKeyRef: {name: b2-offsite, key: key_id}}
+                - name: RCLONE_CONFIG_B2_KEY
+                  valueFrom: {secretKeyRef: {name: b2-offsite, key: application_key}}
+                - name: B2_BUCKET
+                  valueFrom: {secretKeyRef: {name: b2-offsite, key: bucket}}
+              command:
+                - sh
+                - -euc
+                - |
+                  # An empty or wrongly mounted volume would make sync hide every file in B2.
+                  if ! ls /data/*/config >/dev/null 2>&1; then
+                    echo "no restic repositories found in /data: not syncing" >&2
+                    exit 1
+                  fi
+                  rclone sync /data "b2:${B2_BUCKET}/restic" --fast-list --transfers 4 --stats-one-line -v
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: "1", memory: 256Mi}
+              volumeMounts:
+                - {name: data, mountPath: /data, readOnly: true}
+          volumes:
+            - name: data
+              hostPath: {path: /srv/hdd/restic, type: Directory}
+---
+# The namespace denies all traffic by default; this Job may reach B2's API (HTTPS on the internet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-offsite-sync-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: offsite-sync}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10]
+      ports:
+        - {protocol: TCP, port: 443}

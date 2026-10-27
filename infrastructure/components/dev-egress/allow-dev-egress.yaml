@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dev-egress
+spec:
+  podSelector:
+    matchLabels: {homelab.lan/tier: dev}
+  policyTypes: [Egress]
+  egress:
+    - to:   # the internet, but no private, link-local or Tailscale addresses
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+    - to:   # Forgejo (git over SSH and HTTP)
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: forgejo}
+      ports:
+        - {protocol: TCP, port: 2222}
+        - {protocol: TCP, port: 3000}

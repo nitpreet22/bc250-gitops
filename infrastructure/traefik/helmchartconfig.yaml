@@ -1,0 +1,18 @@
+# k3s's bundled Traefik, adjusted (k3s merges these values into its own chart values):
+#   - on bc250-2, the always-on board, next to the sites. Traefik on a different board from the
+#     sites made every response cross the LAN twice more, which capped the 1,000-visitor load
+#     test at 47 MB/s (2026-10-29, sites on bc250-3 and Traefik on bc250-2). Until the 2026-11
+#     consolidation, the sites and Traefik were on bc250-3.
+#   - requests and limits: 1.1 CPU and ~1.4 GiB were measured at 1,000 visitors.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    nodeSelector:
+      role: brain
+    resources:
+      requests: {cpu: 200m, memory: 256Mi}
+      limits: {cpu: "3", memory: 2Gi}

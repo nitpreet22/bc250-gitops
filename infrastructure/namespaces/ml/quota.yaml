@@ -1,0 +1,14 @@
+# Sized from the plan's memory budget; revisit after the Phase 8 load test.
+# No GPU line: GPU pods here queue at the scheduler (the device plugin offers exactly one GPU)
+# instead of being rejected by the quota. Namespaces without GPU work have a GPU quota of 0.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: budget
+spec:
+  hard:
+    requests.cpu: "3"
+    requests.memory: 8Gi
+    limits.cpu: "16"
+    limits.memory: 16Gi
+    pods: "15"

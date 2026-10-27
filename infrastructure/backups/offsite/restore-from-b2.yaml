@@ -1,0 +1,42 @@
+# Not part of the kustomization: apply by hand only to rebuild the REST server's repositories from
+# B2 after the USB hard drive on bc250-2 is lost. Mount the replacement drive first
+# (bootstrap/06-backup-disk.sh, then 06-backup-dirs.sh, which makes /srv/hdd/restic). Copies every
+# repository back (overwriting nothing that's already there), after which the usual restore-shell
+# steps work again.
+#   kubectl -n backups apply -f infrastructure/backups/offsite/restore-from-b2.yaml
+#   kubectl -n backups logs -f job/restore-from-b2
+#   kubectl -n backups delete job restore-from-b2
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restore-from-b2
+  namespace: backups
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: offsite-sync}   # same egress policy as the nightly sync
+    spec:
+      restartPolicy: OnFailure
+      priorityClassName: batch
+      nodeSelector: {role: brain}   # /srv/hdd/restic is on bc250-2
+      containers:
+        - name: restore
+          image: docker.io/rclone/rclone:1.75.2
+          env:
+            - {name: RCLONE_CONFIG_B2_TYPE, value: b2}
+            - name: RCLONE_CONFIG_B2_ACCOUNT
+              valueFrom: {secretKeyRef: {name: b2-offsite, key: key_id}}
+            - name: RCLONE_CONFIG_B2_KEY
+              valueFrom: {secretKeyRef: {name: b2-offsite, key: application_key}}
+            - name: B2_BUCKET
+              valueFrom: {secretKeyRef: {name: b2-offsite, key: bucket}}
+          command: [sh, -euc, 'rclone copy "b2:${B2_BUCKET}/restic" /data --ignore-existing --fast-list --transfers 4 --stats-one-line -v']
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          hostPath: {path: /srv/hdd/restic, type: Directory}

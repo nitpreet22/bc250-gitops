@@ -1,0 +1,14 @@
+# Cluster metrics (plan Phase 3): node-exporter on every board (temperatures, GPU busy, 2.5 GbE
+# link), kube-state-metrics, VictoriaMetrics single-node as the store, vmalert + Alertmanager for
+# alerts. No dashboard product: the ops dashboard (13_home_server_dashboard) is the front end and
+# queries VictoriaMetrics' Prometheus-compatible API at http://vmsingle.monitoring.svc:8428.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - network-policies.yaml
+  - node-exporter.yaml
+  - kube-state-metrics.yaml
+  - victoria-metrics.yaml
+  - vmalert.yaml
+  - alertmanager-discord.sops.yaml   # the Discord webhook URL (you fill it in)

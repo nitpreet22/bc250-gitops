@@ -1,0 +1,67 @@
+# restic's REST server: the backup target for every backup Job in the cluster. The repositories
+# live on the USB hard drive on bc250-2 (/srv/hdd/restic, bootstrap/06-backup-dirs.sh), a separate disk
+# from the NVMe that holds the data being backed up; the B2 off-site copy (../offsite) covers losing
+# the board. Until 2026-11 this was a local-path volume on bc250-3, which is now powered on only
+# when needed.
+# Only pods labelled homelab.lan/role=backup can reach it; each repository is encrypted by restic
+# with its own password, so the server itself never sees plaintext.
+# type Directory: while the drive isn't mounted, /srv/hdd/restic doesn't exist (the empty mount
+# point is immutable), so the server waits in ContainerCreating instead of writing to the NVMe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restic
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: restic}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: restic, homelab.lan/tier: service}
+    spec:
+      nodeSelector: {role: brain}     # where the drive is
+      priorityClassName: public-service
+      containers:
+        - name: rest-server
+          image: restic/rest-server:0.14.0
+          # The image's entrypoint script (run as CMD) reads these:
+          # rest-server --path /data --no-auth, listening on :8000.
+          env:
+            - {name: DATA_DIRECTORY, value: /data}
+            - {name: DISABLE_AUTHENTICATION, value: "1"}
+          ports:
+            - {name: http, containerPort: 8000}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          hostPath: {path: /srv/hdd/restic, type: Directory}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: restic
+spec:
+  selector: {app.kubernetes.io/name: restic}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-jobs
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: restic}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: {homelab.lan/role: backup}
+      ports:
+        - {protocol: TCP, port: 8000}

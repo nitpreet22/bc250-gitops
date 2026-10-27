@@ -1,0 +1,63 @@
+# Shares the render node (/dev/dri/renderD128, no display or KMS access) on every board, so
+# Moonlight desktops (templates/desktop) can render with the GPU wherever they run. Unlike the
+# single devic.es/gpu per board (generic-device-plugin.yaml), several pods may hold
+# devic.es/render at once:
+#   resources: {limits: {devic.es/render: 1}}
+# It also shares /dev/kvm, for the Android emulator in a dev pod (templates/agent/components/kvm):
+#   resources: {limits: {devic.es/kvm: 1}}
+# Only bc250-2 has /dev/kvm (SVM turned on in its BIOS on 2026-11-05; still off on the others), so
+# the plugin advertises no kvm on bc250-1 or bc250-3, and a pod asking for it can only run on
+# bc250-2.
+# Same plugin as generic-device-plugin.yaml (squat/generic-device-plugin, Apache-2.0).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: render-node-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: render-node-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: render-node-plugin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: render-node-plugin
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: generic-device-plugin
+          image: squat/generic-device-plugin:f7c3291
+          args:
+            - --device
+            - |
+              name: render
+              groups:
+                - count: 8
+                  paths:
+                    - path: /dev/dri/renderD128
+            - --device
+            - |
+              name: kvm
+              groups:
+                - count: 4
+                  paths:
+                    - path: /dev/kvm
+          resources:
+            requests: {cpu: 10m, memory: 10Mi}
+            limits: {cpu: 50m, memory: 20Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: device-plugin, mountPath: /var/lib/kubelet/device-plugins}
+            - {name: dev, mountPath: /dev}
+      volumes:
+        - name: device-plugin
+          hostPath: {path: /var/lib/kubelet/device-plugins}
+        - name: dev
+          hostPath: {path: /dev}

@@ -1,0 +1,26 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: node-exporter
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: prometheus-node-exporter
+      version: 4.60.1          # node-exporter 1.12.1
+      sourceRef: {kind: HelmRepository, name: prometheus-community, namespace: flux-system}
+  values:
+    fullnameOverride: node-exporter
+    priorityClassName: platform
+    tolerations:
+      - operator: Exists        # every board, whatever its taints
+    extraArgs:
+      - --collector.drm         # amdgpu busy % and VRAM (node_drm_*)
+    resources:
+      requests: {cpu: 20m, memory: 32Mi}
+      limits: {cpu: 200m, memory: 64Mi}
+    # The chart already annotates its Service with prometheus.io/scrape. VictoriaMetrics' default
+    # job also needs prometheus.io/port to match a container port before it keeps the target.
+    service:
+      annotations:
+        prometheus.io/port: "9100"

@@ -1,0 +1,14 @@
+# Sized from the plan's memory budget; revisit after the Phase 8 load test.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: budget
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1536Mi
+    limits.cpu: "4"
+    limits.memory: 3Gi
+    pods: "15"
+    requests.devic.es/gpu: "0"
+    requests.devic.es/uinput: "0"

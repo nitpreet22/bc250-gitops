@@ -1,0 +1,16 @@
+# Platform layer (plan Phase 3), applied by the Flux Kustomization "infrastructure".
+# optional/ holds pieces waiting on your credentials; see optional/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sources.yaml
+  - priority-classes.yaml
+  - policies
+  - namespaces
+  - device-plugins/generic-device-plugin.yaml
+  - device-plugins/render-node-plugin.yaml
+  - monitoring
+  - backups
+  - registry
+  - traefik
+  - optional/tailscale        # private access (enabled 2026-10-30)
