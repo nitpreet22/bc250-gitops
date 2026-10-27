@@ -1,0 +1,13 @@
+# Browser desktop (templates/desktop/components/browser): the homelab desktop with Chromium, for a
+# dev pod that runs headless. You sign in to sites over Moonlight; the project's dev pod drives the
+# same signed-in Chromium with its "desktop-browser" MCP server, through the cdp-forward sidecar.
+# No Claude Code here: it stays in the dev pod. Built by
+#   bootstrap/build-image.sh browser-desktop <tag>
+FROM 192.168.1.106:30500/desktop:2026-10-28.1
+
+# socat: the cdp-forward sidecar (Chromium's DevTools port listens on localhost only).
+RUN dnf -y install --setopt=install_weak_deps=False \
+        chromium liberation-fonts google-noto-sans-fonts socat \
+    && dnf clean all
+
+COPY --chmod=0755 desktop-browser /usr/local/bin/

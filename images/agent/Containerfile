@@ -1,0 +1,77 @@
+# Base image for every Claude Code dev pod (plan Phase 4). Project images extend it:
+#   FROM registry.homelab.lan/agent:<tag>
+# Built on bc250-2 with podman by bootstrap/build-image.sh and pushed to the in-cluster registry:
+#   bootstrap/build-image.sh agent <tag>
+FROM registry.fedoraproject.org/fedora:44
+
+# Toolchain: git/gh, Node (Claude Code needs Node 22+), Python with uv, a C/C++ build chain, and
+# the everyday CLI tools agents reach for. kubectl matches the cluster's k3s version; a pod can
+# only use it where its overlay grants a ServiceAccount (templates/agent/components/job-runner).
+# PostgreSQL (server and client) for projects that develop against a database:
+# the agent runs its own server as uid 10000, data on the volume (see the agent user below).
+RUN dnf -y install --setopt=install_weak_deps=False \
+      git gh openssh-clients jq ripgrep fd-find less vim-minimal procps-ng which findutils \
+      tar unzip xz curl ca-certificates \
+      nodejs npm \
+      python3 python3-pip python3-devel uv \
+      gcc gcc-c++ make cmake pkgconf-pkg-config \
+      kubernetes1.36-client \
+      postgresql-server \
+    && dnf clean all
+
+# Claude Code, pinned. Updates come from rebuilding this image, never from inside a pod.
+ARG CLAUDE_CODE_VERSION=2.1.311
+RUN npm install -g --no-fund --no-audit @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# Kaggle CLI (competition work) and Google Colab CLI (non-competition training), as uv tools on PATH.
+ARG KAGGLE_VERSION=2.2.5
+ARG COLAB_CLI_VERSION=0.7.5
+ENV UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin
+RUN uv tool install kaggle==${KAGGLE_VERSION} \
+    && uv tool install google-colab-cli==${COLAB_CLI_VERSION}
+
+# Browser and desktop automation, the same pair as on the PC (claude-mcp-setup registers them):
+#   - Playwright MCP ("playwright") for web pages, cross-origin iframes included, on the image's
+#     Chromium (headless here; see the playwright-mcp launcher). Pinned; its package pins the
+#     exact Playwright it runs on.
+#   - cua-driver ("cua-driver") for native apps, from its release binary, checked against the
+#     release's checksums.txt. It needs X11/xkbcommon libraries even headless, and D-Bus with
+#     at-spi2-core for the accessibility bus (see the cua-driver-mcp launcher).
+# These images also carry the submission guard, which the desktop images turn on (they copy these
+# files from this image).
+RUN dnf -y install --setopt=install_weak_deps=False \
+      chromium liberation-fonts google-noto-sans-fonts \
+      dbus-daemon dbus-tools at-spi2-core libX11 libXi libxkbcommon libxcb \
+    && dnf clean all
+ARG PLAYWRIGHT_MCP_VERSION=0.0.85
+RUN npm install --prefix /opt/playwright-mcp --no-fund --no-audit @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}
+ARG CUA_DRIVER_VERSION=0.53.0
+ARG CUA_DRIVER_SHA256=fdee86c42b3f1f43916887f05e38cc6b79883668cde55c29ca862abb09db1908
+RUN curl -fsSL -o /tmp/cua-driver.tar.gz \
+      "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/cua-driver-rs-${CUA_DRIVER_VERSION}-linux-x86_64-binary.tar.gz" \
+    && echo "${CUA_DRIVER_SHA256}  /tmp/cua-driver.tar.gz" | sha256sum -c - \
+    && install -d /opt/cua-driver && tar -C /opt/cua-driver -xzf /tmp/cua-driver.tar.gz \
+    && rm /tmp/cua-driver.tar.gz \
+    && DO_NOT_TRACK=1 /opt/cua-driver/cua-driver --version
+COPY --chmod=0755 playwright-mcp cua-driver-mcp claude-mcp-setup /usr/local/bin/
+COPY --chmod=0755 submission-guard.mjs /usr/local/bin/submission-guard
+
+# The agent user. Claude Code refuses to skip permission prompts as root. uid 10000 has no
+# account on the boards, so it is never the boards' own admin user (uid 1000).
+# /run/postgresql is Fedora PostgreSQL's socket and lock directory; owning it lets the agent run
+# the server without root:
+#   initdb -D ~/pgdata && pg_ctl -D ~/pgdata -l ~/pgdata/server.log start && psql postgres
+RUN useradd --uid 10000 --create-home --shell /bin/bash agent \
+    && install -d -o agent -g agent /workspace /run/postgresql
+
+COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY claude-settings.json /etc/homelab/claude-settings.json
+
+# Claude Code keeps settings, .claude.json and session history under CLAUDE_CONFIG_DIR, which the
+# pod mounts from its volume so `claude --continue` survives restarts.
+ENV CLAUDE_CONFIG_DIR=/home/agent/.claude \
+    DISABLE_UPDATES=1 \
+    HOME=/home/agent
+USER 10000
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]

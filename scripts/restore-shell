@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Opens a shell for restoring a backup: a one-off Job made from a backup CronJob's own template
+# (same image, restic repository, password Secret, volume and node), but idle instead of backing
+# up, and with the volume writable. restic is ready to use inside (`restic snapshots`).
+#
+#   scripts/restore-shell <namespace> <backup-cronjob> [-- <command>]
+#   e.g. scripts/restore-shell ml my-project-backup
+#        scripts/restore-shell ml my-project-backup -- restic snapshots    (no interactive shell)
+#
+# Stop the app first (`kubectl -n <ns> scale deploy/<app> --replicas=0`) so nothing writes while
+# you restore. The Job is deleted when you leave the shell; its pod stops after an hour regardless.
+set -euo pipefail
+
+[[ $# -eq 2 || ( $# -ge 4 && $3 == -- ) ]] || { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+readonly NAMESPACE=$1 CRONJOB=$2
+readonly JOB=restore-shell-$(date +%H%M%S)
+
+# The backup container's command becomes `sleep 3600`; its first volume mount is made writable
+# ("add" also replaces an existing readOnly: true).
+kubectl -n "$NAMESPACE" create job "$JOB" --from="cronjob/$CRONJOB" --dry-run=client -o yaml |
+  kubectl patch --local -f - --type=json -o yaml -p '[
+    {"op": "replace", "path": "/spec/template/spec/containers/0/command", "value": ["sleep", "3600"]},
+    {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/0/readOnly", "value": false},
+    {"op": "add", "path": "/spec/backoffLimit", "value": 0},
+    {"op": "add", "path": "/spec/template/spec/restartPolicy", "value": "Never"}
+  ]' |
+  kubectl apply -f - >/dev/null
+trap 'kubectl -n "$NAMESPACE" delete job "$JOB" --wait=false >/dev/null' EXIT
+
+kubectl -n "$NAMESPACE" wait --for=condition=Ready pod -l "job-name=$JOB" --timeout=120s >/dev/null
+if [[ $# -ge 4 ]]; then
+  shift 3
+  kubectl -n "$NAMESPACE" exec "job/$JOB" -- sh -c "$*"
+else
+  echo "Restore shell for $NAMESPACE/$CRONJOB (restic is set up; 'exit' removes the pod)."
+  kubectl -n "$NAMESPACE" exec -it "job/$JOB" -- sh
+fi

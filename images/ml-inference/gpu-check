@@ -1,0 +1,17 @@
+#!/opt/inference/bin/python3
+"""Reports what an inference Job can use: the Vulkan GPU (as ncnn sees it), ONNX Runtime's
+providers and OpenCV's video backends. Exit status 1 when ncnn finds no Vulkan GPU."""
+import sys
+
+import cv2
+import ncnn
+import onnxruntime
+
+gpu_count = ncnn.get_gpu_count()
+print(f"ncnn {ncnn.__version__}: {gpu_count} Vulkan GPU(s)")
+for index in range(gpu_count):
+    print(f"  gpu {index}: {ncnn.get_gpu_info(index).device_name()}")
+print(f"onnxruntime {onnxruntime.__version__}: providers {onnxruntime.get_available_providers()}")
+backends = [cv2.videoio_registry.getBackendName(b) for b in cv2.videoio_registry.getStreamBackends()]
+print(f"opencv {cv2.__version__}: video backends {backends}")
+sys.exit(0 if gpu_count > 0 else 1)

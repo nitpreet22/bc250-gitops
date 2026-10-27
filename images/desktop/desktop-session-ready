@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# labwc's startup command (see desktop-session). Records the session's environment so processes
+# started from outside it (kubectl exec, e.g. Claude Code) can join the desktop:
+#   source /run/user/1000/session.env
+# then starts the given command inside the desktop.
+set -euo pipefail
+
+session_env=$XDG_RUNTIME_DIR/session.env
+{
+  for name in WAYLAND_DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS PULSE_SERVER; do
+    printf 'export %s=%q\n' "$name" "${!name:-}"
+  done
+} > "$session_env.new"
+mv "$session_env.new" "$session_env"
+
+if [[ $# -gt 0 ]]; then
+  exec sh -c "$*"
+fi

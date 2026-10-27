@@ -1,0 +1,26 @@
+# Runtime for local inference Jobs on bc250-1's GPU (plan Phase 6, ml): models exported to ncnn
+# run on the GPU through Vulkan (Mesa RADV; no ROCm on the BC-250), ONNX Runtime runs on the CPU,
+# and OpenCV decodes video on the CPU (no hardware decode). Built by
+#   bootstrap/build-image.sh ml-inference <tag>
+# Jobs start from a dev pod (templates/agent/components/job-runner).
+FROM registry.fedoraproject.org/fedora:44@sha256:474e0ab5a1e59c215e59f281b1fe49f2866ec20f773533f5cca851cc830c5c2b
+
+RUN dnf -y install --setopt=install_weak_deps=False \
+        mesa-vulkan-drivers vulkan-loader vulkan-tools python3 python3-pip curl \
+    && dnf clean all
+
+# Pinned Python wheels (all ship cp314 manylinux builds; OpenCV's bundles its own FFmpeg decoders).
+RUN python3 -m venv /opt/inference \
+    && /opt/inference/bin/pip install --no-cache-dir \
+         ncnn==1.0.20261020 onnxruntime==1.31.1 opencv-python-headless==5.0.0.93 numpy==2.5.4
+ENV PATH=/opt/inference/bin:$PATH
+# Only RADV: Mesa also offers llvmpipe, a CPU "GPU" that ncnn ranks above the BC-250, so a model
+# could silently run on the CPU. HOME is writable for Mesa's shader cache (Jobs run as uid 10000).
+ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json \
+    HOME=/tmp
+
+COPY --chmod=0755 gpu-check /usr/local/bin/gpu-check
+# The dev pods' uid; Jobs need no account on the boards.
+USER 10000
+WORKDIR /tmp
+CMD ["gpu-check"]

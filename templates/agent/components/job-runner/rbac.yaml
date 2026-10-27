@@ -1,0 +1,31 @@
+# The overlay's namePrefix makes these <project>-agent; the admission policy reads the project
+# name back from that ServiceAccount name.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-job-runner
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  # Reading the Jobs' pods, their logs and events (why a pod is pending or was evicted).
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-job-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-job-runner
+subjects:
+  - kind: ServiceAccount
+    name: agent

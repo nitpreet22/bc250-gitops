@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# hl: start, stop and attach to the Claude Code dev pods (plan Phase 4, "Helper CLI").
+# Works from the PC (Git Bash, kubectl context "homelab") and on bc250-2 (same context name).
+#
+#   hl ls                  every project: namespace, replicas, state, CPU and memory
+#   hl up <project>        scale to 1 and wait until it's ready
+#   hl down <project>      scale to 0 (frees its memory; the volume keeps code and history)
+#   hl attach <project>    open Claude Code in the pod: resume the checkout's last conversation
+#   hl pane <project>      what a project's terminal runs: attach if running, otherwise offer to start it
+#   hl menu                the launcher terminal: start/open or stop a project
+#   hl sync                herdr-core on bc250-2: a terminal (a Herdr space) per running project,
+#                          none for stopped ones (up and down run it; from the PC it runs over ssh)
+#   hl msg ls              the agents you can message: project, state (idle/working), what it's doing
+#   hl msg send <project>  send standard input as a prompt to that project's Claude Code (its
+#                          herdr-core terminal), headed with who sent it. From the PC: over ssh.
+#   hl relay               bc250-2 only: the forced command of the pods' herdr-msg key
+#                          (authorized_keys); allows "msg ls" and "msg send <project>", and
+#                          names the sender from the calling pod's IP, so pods can't pose as others.
+#
+# A project is a Deployment labelled homelab.lan/project=<project> and homelab.lan/component
+# dev-pod (templates/agent) or desktop (templates/desktop; up, down and ls, and attach where the
+# Deployment names an attach command in its homelab.lan/attach-command annotation).
+set -euo pipefail
+
+readonly CONTEXT=${HL_CONTEXT:-homelab}
+readonly MANAGED="homelab.lan/component in (dev-pod,desktop)"
+KUBECTL=(kubectl --context "$CONTEXT")
+# The always-on herdr-core on bc250-2 (bootstrap/05-herdr.sh) holds a terminal per running
+# project, which the Herdr apps (PC, phone) show; hl sync keeps them in step with the cluster.
+readonly CORE_HOST=${HL_CORE_HOST:-bc250-2}
+readonly SPACES_DIR=${HL_SPACES_DIR:-$HOME/agents}
+readonly LAUNCHER=hl
+HL_BIN=$(readlink -f "$0")   # what the core's terminals run
+readonly HL_BIN
+
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# Prints "<namespace> <deployment>" for a project, or fails with a message.
+find_project() {
+  local project=$1 found
+  found=$("${KUBECTL[@]}" get deploy -A \
+    -l "$MANAGED,homelab.lan/project=$project" \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}')
+  if [[ -z $found ]]; then
+    echo "hl: no dev pod for project '$project' (see: hl ls)" >&2
+    return 1
+  fi
+  echo "$found" | head -1
+}
+
+replicas_of() { "${KUBECTL[@]}" -n "$1" get deploy "$2" -o jsonpath='{.spec.replicas}'; }
+
+cmd_ls() {
+  local usage_table
+  # Pod CPU/memory from metrics-server; empty when nothing runs.
+  usage_table=$("${KUBECTL[@]}" top pods -A -l "$MANAGED" --no-headers 2>/dev/null || true)
+  printf '%-24s %-13s %-8s %-10s %-8s %s\n' PROJECT NAMESPACE REPLICAS STATE CPU MEMORY
+  "${KUBECTL[@]}" get deploy -A -l "$MANAGED" \
+    -o jsonpath='{range .items[*]}{.metadata.labels.homelab\.lan/project}{" "}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.replicas}{" "}{.status.readyReplicas}{"\n"}{end}' |
+  sort | while read -r project namespace deployment replicas ready; do
+    local state=stopped cpu=- memory=- pod_usage
+    if [[ $replicas != 0 ]]; then
+      [[ ${ready:-0} == "$replicas" ]] && state=running || state=starting
+    fi
+    pod_usage=$(echo "$usage_table" | awk -v ns="$namespace" -v d="$deployment-" '$1 == ns && index($2, d) == 1 {print $3, $4; exit}')
+    [[ -n $pod_usage ]] && read -r cpu memory <<<"$pod_usage"
+    printf '%-24s %-13s %-8s %-10s %-8s %s\n' "$project" "$namespace" "$replicas" "$state" "$cpu" "$memory"
+  done
+}
+
+cmd_up() {
+  local namespace deployment
+  read -r namespace deployment < <(find_project "$1")
+  "${KUBECTL[@]}" -n "$namespace" scale deploy "$deployment" --replicas=1 >/dev/null
+  echo "Starting $1 ($namespace/$deployment)..."
+  "${KUBECTL[@]}" -n "$namespace" rollout status deploy "$deployment" --timeout=300s
+  sync_after_change
+}
+
+cmd_down() {
+  local namespace deployment
+  read -r namespace deployment < <(find_project "$1")
+  "${KUBECTL[@]}" -n "$namespace" scale deploy "$deployment" --replicas=0 >/dev/null
+  echo "Stopped $1 ($namespace/$deployment); its volume keeps the checkout and Claude history."
+  sync_after_change
+}
+
+deploy_field() {
+  "${KUBECTL[@]}" -n "$1" get deploy "$2" -o jsonpath="$3"
+}
+
+cmd_attach() {
+  local namespace deployment component attach_container attach_command
+  read -r namespace deployment < <(find_project "$1")
+  component=$(deploy_field "$namespace" "$deployment" '{.metadata.labels.homelab\.lan/component}')
+  # A Deployment can name its own attach command (and container) in annotations, e.g. the job
+  # pipeline desktop, where Claude Code runs inside the desktop session.
+  attach_container=$(deploy_field "$namespace" "$deployment" '{.metadata.annotations.homelab\.lan/attach-container}')
+  attach_command=$(deploy_field "$namespace" "$deployment" '{.metadata.annotations.homelab\.lan/attach-command}')
+  if [[ $component == desktop && -z $attach_command ]]; then
+    echo "hl: $1 is a desktop; open it in Moonlight (README: Desktops)" >&2
+    return 1
+  fi
+  if [[ $(replicas_of "$namespace" "$deployment") == 0 ]]; then
+    echo "hl: $1 is scaled to zero; start it with: hl up $1" >&2
+    return 1
+  fi
+  # Claude Code (2.1.295 and later) reports working / blocked / done itself through OSC 7501,
+  # which passes through `kubectl exec -it` to herdr-core and on to the Herdr apps.
+  if [[ -n $attach_command ]]; then
+    exec "${KUBECTL[@]}" -n "$namespace" exec -it "deploy/$deployment" \
+      -c "${attach_container:-agent}" -- "$attach_command"
+  fi
+  # In a dev pod: resume the last conversation in the checkout, or start a new one, after ending
+  # any earlier interactive Claude Code in the pod (STOP_EARLIER_CLAUDE, below).
+  local session
+  local -a resume=()
+  session=$(pod_latest_session "$namespace" "$deployment" || true)
+  [[ -n $session ]] && resume=(--resume "$session")
+  exec "${KUBECTL[@]}" -n "$namespace" exec -it "deploy/$deployment" -c agent -- \
+    bash -c "$STOP_EARLIER_CLAUDE"'
+      cd "${REPO_DIR:-/workspace}" 2>/dev/null || cd /workspace
+      exec claude "$@"' \
+    claude "${resume[@]}"
+}
+
+# Runs in the pod before attaching. Claude Code outlives the `kubectl exec` that started it: when
+# the exec ends (a closed terminal, a reattach), Claude keeps running in the pod with no terminal.
+# Seen 2026-11-10: every pod held one to three such sessions, some days old, beside the attached
+# one, on the same conversation. One interactive session per pod is the rule, so the new attach
+# ends the others first: SIGTERM, then SIGKILL after 5 s (two of them ignored SIGTERM).
+# `claude -p` runs (the agent's own tools) are left alone.
+readonly STOP_EARLIER_CLAUDE='
+  earlier=()
+  for pid in $(pgrep -f "^claude( |$)"); do
+    case " $(tr "\0" " " < /proc/$pid/cmdline 2>/dev/null) " in
+      *" -p "*|*" --print "*) ;;
+      *) earlier+=("$pid") ;;
+    esac
+  done
+  if (( ${#earlier[@]} )); then
+    kill "${earlier[@]}" 2>/dev/null
+    for _ in $(seq 25); do
+      alive=$(for pid in "${earlier[@]}"; do [[ -d /proc/$pid ]] && echo "$pid"; done)
+      [[ -z $alive ]] && break
+      sleep 0.2
+    done
+    [[ -n $alive ]] && kill -9 $alive 2>/dev/null
+  fi
+'
+
+# The id of the newest interactive conversation in the pod's checkout, or nothing. `claude -p`
+# runs are saved there too (entrypoint "sdk-cli"); only interactive ones ("cli") count.
+pod_latest_session() {
+  "${KUBECTL[@]}" -n "$1" exec "deploy/$2" -c agent -- bash -c '
+    cd "${REPO_DIR:-/workspace}" 2>/dev/null || cd /workspace
+    dir=$CLAUDE_CONFIG_DIR/projects/$(pwd | sed "s/[^A-Za-z0-9]/-/g")
+    for file in $(ls -t -- "$dir"/*.jsonl 2>/dev/null); do
+      if grep -qs -m1 "\"entrypoint\":\"cli\"" "$file"; then basename "$file" .jsonl; exit; fi
+    done'
+}
+
+cmd_pane() {
+  local project=$1 namespace deployment
+  while :; do
+    if ! read -r namespace deployment < <(find_project "$project" 2>/dev/null); then
+      echo "$project has no dev pod yet. Press Enter to check again."
+      read -r
+      continue
+    fi
+    if [[ $(replicas_of "$namespace" "$deployment") != 0 ]]; then
+      ( cmd_attach "$project" ) || true
+      echo
+      echo "Claude Code in $project exited. Press Enter to reattach, or type 'down' to stop the pod."
+    else
+      echo "$project is scaled to zero. Press Enter to start it (hl up), or close this pane."
+      read -r
+      cmd_up "$project" || true
+      continue
+    fi
+    read -r answer
+    [[ $answer == down ]] && cmd_down "$project"
+  done
+}
+
+# ---- herdr-core terminals (Herdr spaces) ----------------------------------------------------------
+# Each running project is a terminal in herdr-core on bc250-2 running `hl pane <project>`, and the
+# launcher one running `hl menu`. A terminal labelled herdr.space=<id> herdr.tab=<id> shows up in
+# the Herdr apps, and an id they don't know yet becomes a new space, named after the terminal's
+# folder ($SPACES_DIR/<project>): so each project is a space called by its name. hl finds its own
+# terminals by the label hl.tab=<project or "hl">. sync drives the core through `hc`, so it runs
+# on bc250-2.
+
+on_core_host() { [[ ${HOSTNAME%%.*} == "$CORE_HOST" ]]; }   # bash's own; Git Bash lacks hostname -s
+
+# The same space and tab ids for a project every time, so the apps keep showing it in one place.
+space_id() { printf 'sphl%s' "$(printf '%s' "$1" | sha1sum | cut -c1-28)"; }
+tab_id() { printf 'tbhl%s' "$(printf '%s' "$1" | sha1sum | cut -c1-28)"; }
+
+# This boot's id. A terminal started in an earlier boot came back as a plain shell (herdr-core
+# replaces a lost program with a shell and never re-runs it), so sync replaces it.
+current_boot() { cat /proc/sys/kernel/random/boot_id; }
+
+# hl's live terminals, one per line: "<hl.tab> <address> <hl.boot>".
+hl_terminals() {
+  local address
+  for address in $(hc ls --json | jq -r '.terminals[].address'); do
+    hc get --json "$address" | jq -r 'select(.labels["hl.tab"] != null) |
+      [.labels["hl.tab"], .address, (.labels["hl.boot"] // "")] | join(" ")'
+  done
+}
+
+# Starts `hl <subcommand> <name>` in its own terminal and space. --no-parent: the terminal belongs
+# to no one, so it outlives this sync.
+start_terminal() {
+  local name=$1; shift
+  local folder=$SPACES_DIR/$name
+  mkdir -p "$folder"
+  hc run --bg --no-parent --no-notify --name "$name" --cwd "$folder" \
+    --label "herdr.space=$(space_id "$name")" --label "herdr.tab=$(tab_id "$name")" \
+    --label "hl.tab=$name" --label "hl.boot=$(current_boot)" \
+    -- "$HL_BIN" "$@" >/dev/null
+  echo "opened $name"
+}
+
+# Ends a terminal and removes it. For `hl pane` that ends the kubectl exec; Claude Code itself
+# keeps running in the pod until the pod stops or the next attach ends it (STOP_EARLIER_CLAUDE).
+stop_terminal() {
+  # </dev/null: sync calls this inside a `while read` loop, whose input hc must not consume.
+  hc kill "$1" </dev/null >/dev/null 2>&1 || true
+  hc rm "$1" </dev/null >/dev/null 2>&1 || true
+}
+
+# Projects that should have a terminal, one per line: scaled above zero (running or starting) and
+# attachable, so a desktop counts only when it names an attach command.
+projects_wanting_tabs() {
+  "${KUBECTL[@]}" get deploy -A -l "$MANAGED" \
+    -o jsonpath='{range .items[*]}{.metadata.labels.homelab\.lan/project}{"\t"}{.spec.replicas}{"\t"}{.metadata.labels.homelab\.lan/component}{"\t"}{.metadata.annotations.homelab\.lan/attach-command}{"\n"}{end}' |
+  awk -F '\t' '$2 != 0 && !($3 == "desktop" && $4 == "") {print $1}'
+}
+
+all_projects() {
+  "${KUBECTL[@]}" get deploy -A -l "$MANAGED" \
+    -o jsonpath='{range .items[*]}{.metadata.labels.homelab\.lan/project}{"\n"}{end}'
+}
+
+cmd_sync() {
+  if ! on_core_host; then
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$CORE_HOST" hl sync
+    return
+  fi
+  local wanted known boot name address terminal_boot present=""
+  wanted=$(projects_wanting_tabs)
+  known=$(all_projects)
+  boot=$(current_boot)
+
+  while read -r name address terminal_boot; do
+    [[ -n $name ]] || continue
+    if [[ $terminal_boot != "$boot" ]]; then
+      stop_terminal "$address"
+      echo "replaced $name (left over from before a reboot)"
+    elif [[ $name != "$LAUNCHER" ]] && grep -qxF "$name" <<<"$known" && ! grep -qxF "$name" <<<"$wanted"; then
+      stop_terminal "$address"
+      echo "closed $name (stopped)"
+    else
+      present+="$name"$'\n'
+    fi
+  done < <(hl_terminals)
+
+  # One terminal per project: two would run two Claude Code sessions on one conversation.
+  grep -qxF "$LAUNCHER" <<<"$present" || start_terminal "$LAUNCHER" menu
+  for name in $wanted; do
+    grep -qxF "$name" <<<"$present" || start_terminal "$name" pane "$name"
+  done
+}
+
+# After up/down. An unreachable core must not fail the start or stop itself.
+sync_after_change() {
+  cmd_sync || echo "hl: couldn't update herdr-core's terminals; run 'hl sync' on $CORE_HOST" >&2
+}
+
+confirm() {
+  local reply
+  read -r -p "$1 [y/N] " reply
+  [[ $reply == [yY]* ]]
+}
+
+# The launcher tab. Row numbers follow hl ls, which sorts by project name.
+cmd_menu() {
+  local table input choice number project
+  local -a projects
+  while :; do
+    clear
+    table=$(cmd_ls)
+    mapfile -t projects < <(tail -n +2 <<<"$table" | awk '{print $1}')
+    awk 'NR == 1 {print "    " $0; next} {printf "%3d %s\n", NR - 1, $0}' <<<"$table"
+    echo
+    echo "<n> start/open   d <n> stop   s sync   Enter refresh"
+    read -r -p "> " input || exit 0
+    # A word and/or a number, spaces optional: "10", "d 10" and "d10" all work.
+    input=${input// /}
+    choice=$input
+    number=
+    if [[ $input =~ ^([a-z]*)([0-9]+)$ ]]; then
+      choice=${BASH_REMATCH[1]:-open}
+      number=${BASH_REMATCH[2]}
+    fi
+    project=
+    if [[ $number =~ ^[0-9]+$ ]] && (( number >= 1 && number <= ${#projects[@]} )); then
+      project=${projects[number - 1]}
+    fi
+    case $choice in
+      '') continue ;;
+      open)
+        if [[ -z $project ]]; then
+          echo "No project $number."
+        elif grep -qxF "$project" <(projects_wanting_tabs); then
+          cmd_sync && echo "Open the $project space in Herdr."
+        else
+          cmd_up "$project" && echo "Open the $project space in Herdr."
+        fi ;;
+      d)
+        if [[ -z $project ]]; then
+          echo "Which one? For example: d3"
+        elif confirm "Stop $project? Its Claude Code session ends; the history is kept."; then
+          cmd_down "$project"
+        fi ;;
+      s) cmd_sync ;;
+      *) echo "Unknown choice '$choice'." ;;
+    esac || true
+    read -r -p "Press Enter for the list. " || exit 0
+  done
+}
+
+# ---- messages between agents (herdr-core terminals) -----------------------------------------------
+# An agent sends a prompt to another project's Claude Code: hl msg send <project> <<'EOF' ... EOF.
+# It arrives in that project's herdr-core terminal like typed text, under a header naming the
+# sender, and the receiver treats it as a peer's request (CLAUDE.md "Messages between agents").
+# Pods reach this through `hl relay` (ssh with a restricted key); the PC and bc250-2 directly.
+
+readonly MSG_MAX_BYTES=16384
+readonly MSG_LOG=${XDG_STATE_HOME:-$HOME/.local/state}/hl-msg.log
+
+# The project terminal's address in herdr-core, or nothing. Never the launcher.
+project_terminal() {
+  local project=$1 name address boot
+  while read -r name address boot; do
+    if [[ $name == "$project" && $name != "$LAUNCHER" ]]; then
+      echo "$address"
+      return
+    fi
+  done < <(hl_terminals)
+}
+
+cmd_msg_ls() {
+  if ! on_core_host; then
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$CORE_HOST" hl msg ls
+    return
+  fi
+  local name address boot
+  printf '%-24s %-8s %s\n' PROJECT STATE DOING
+  while read -r name address boot; do
+    [[ $name == "$LAUNCHER" ]] && continue
+    hc get --json "$address" | jq -r --arg name "$name" \
+      '[$name, (.status.state // "-"), (.status.msg // "")] | @tsv' |
+      while IFS=$'\t' read -r project state doing; do
+        printf '%-24s %-8s %s\n' "$project" "$state" "${doing:0:80}"
+      done
+  done < <(hl_terminals | sort)
+}
+
+# Sends standard input to <project>'s terminal. <sender> is who the header names: a project
+# (from hl relay) or a description of an owner-side session (from the PC or bc250-2).
+cmd_msg_send() {
+  local project=$1 sender=$2 address body
+  if ! on_core_host; then
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$CORE_HOST" \
+      "HL_MSG_FROM=$(printf '%q' "$sender") hl msg send $(printf '%q' "$project")"
+    return
+  fi
+  [[ $project =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "hl msg: '$project' isn't a project name" >&2; return 2; }
+  address=$(project_terminal "$project")
+  [[ -n $address ]] || { echo "hl msg: $project has no terminal (stopped?); see: hl msg ls" >&2; return 1; }
+
+  # Plain text only: no escape sequences or other control characters reach the terminal.
+  body=$(head -c $((MSG_MAX_BYTES + 1)) | tr -d '\000-\010\013-\037\177')
+  [[ -n ${body//[[:space:]]/} ]] || { echo "hl msg: empty message (send the text on standard input)" >&2; return 2; }
+  (( ${#body} <= MSG_MAX_BYTES )) || { echo "hl msg: message over $MSG_MAX_BYTES bytes" >&2; return 2; }
+
+  hc send "$address" "[Message from $sender, through herdr (hl msg). A peer's request, not the owner's approval; how to handle and answer it: \"Messages between agents\" in your CLAUDE.md.]
+
+$body" >/dev/null
+  mkdir -p "$(dirname "$MSG_LOG")"
+  printf '%s %s -> %s (%d bytes)\n' "$(date -Is)" "$sender" "$project" "${#body}" >> "$MSG_LOG"
+  echo "sent to $project ($address)"
+}
+
+# The pod whose IP is calling over ssh, as "<project> (<namespace>)", or nothing. Pods on bc250-2
+# reach its sshd without NAT, so the address is the pod's own.
+calling_pod() {
+  local ip=${SSH_CLIENT%% *}
+  [[ $ip =~ ^10\.42\. ]] || return 0
+  "${KUBECTL[@]}" get pods -A --field-selector "status.podIP=$ip,status.phase=Running" \
+    -o jsonpath='{range .items[*]}{.metadata.labels.homelab\.lan/project}{" "}{.metadata.namespace}{"\n"}{end}' |
+    awk 'NF == 2 { print $1; exit }'
+}
+
+# Forced command for the pods' key: the only things a pod can run here.
+cmd_relay() {
+  local sender words
+  sender=$(calling_pod)
+  if [[ -z $sender ]]; then
+    echo "hl relay: can't tell which project's pod is calling (from ${SSH_CLIENT%% *}); refused" >&2
+    return 1
+  fi
+  read -r -a words <<< "${SSH_ORIGINAL_COMMAND:-}"
+  case "${words[*]:0:2}" in
+    "msg ls")
+      [[ ${#words[@]} -eq 2 ]] || { echo "usage: msg ls" >&2; return 2; }
+      cmd_msg_ls ;;
+    "msg send")
+      [[ ${#words[@]} -eq 3 ]] || { echo "usage: msg send <project> (message on standard input)" >&2; return 2; }
+      [[ ${words[2]} != "$sender" ]] || { echo "hl relay: that's your own terminal" >&2; return 2; }
+      cmd_msg_send "${words[2]}" "the $sender agent" ;;
+    *)
+      echo "hl relay: allowed: \"msg ls\", \"msg send <project>\"" >&2
+      return 2 ;;
+  esac
+}
+
+[[ $# -ge 1 ]] || usage 1
+command=$1; shift
+case $command in
+  ls) cmd_ls ;;
+  sync|menu)
+    [[ $# -eq 0 ]] || usage 1
+    "cmd_$command" ;;
+  up|down|attach|pane)
+    [[ $# -eq 1 ]] || usage 1
+    "cmd_$command" "$1" ;;
+  msg)
+    case "${1:-} $#" in
+      "ls 1") cmd_msg_ls ;;
+      "send 2") cmd_msg_send "$2" "${HL_MSG_FROM:-an owner-side session on ${HOSTNAME%%.*}}" ;;
+      *) usage 1 ;;
+    esac ;;
+  relay)
+    [[ $# -eq 0 ]] || usage 1
+    cmd_relay ;;
+  -h|--help|help) usage ;;
+  *) echo "hl: unknown command '$command'" >&2; usage 1 ;;
+esac

@@ -1,0 +1,12 @@
+# Gives a dev pod a whole GPU (devic.es/gpu). Every board has one; while a pod holds it, GPU Jobs
+# on that board queue behind it, so scale the pod down when you're not using the GPU. The pod
+# stays on the board where its volume was created. (Until 2026-11 this component also moved the
+# pod to bc250-1, the dedicated GPU board; there is none now.)
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/devic.es~1gpu
+        value: "1"

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "ask": [
+      "mcp__submission-guard__approve_submission",
+      "mcp__desktop-browser__browser_evaluate",
+      "mcp__desktop-browser__browser_run_code_unsafe"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__desktop-browser__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "SUBMIT_GUARD_PLAYWRIGHT_SERVER=desktop-browser PLAYWRIGHT_MCP_OUTPUT_DIR=\"$HOME/.cache/desktop-browser/output\" /usr/local/bin/submission-guard hook"
+          }
+        ]
+      }
+    ]
+  }
+}

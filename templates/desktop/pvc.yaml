@@ -1,0 +1,10 @@
+# Wolf's config and pairings (/etc/wolf) and the desktop user's home (browser profiles, logins).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: desktop-volume
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 20Gi}

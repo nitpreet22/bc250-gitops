@@ -1,0 +1,51 @@
+# A browser desktop for a dev pod that runs headless: Chromium over
+# Moonlight for you to sign in to sites, which the project's dev pod also drives with its
+# "desktop-browser" MCP server (templates/agent/components/desktop-browser). Start it only when you
+# need it: hl up / hl down <project>-desktop.
+#
+#   components: [../../../templates/desktop/ports/<block>, ../../../templates/desktop/components/browser]
+#
+# The overlay adds a NetworkPolicy that lets its own dev pod reach port 9223 (no one else may).
+#
+#   wolf         the desktop, starting Chromium (images/browser-desktop/desktop-browser). Its
+#                DevTools port, 9222, listens on localhost only.
+#   cdp-forward  socat, offering that port on 9223 to the Service desktop-cdp.
+#
+# The template's ingress rule for Moonlight (LAN, Tailscale, the subnet router) is narrowed here
+# to the desktops' port range, so those addresses can't reach 9223.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - service.yaml
+patches:
+  - target: {kind: Deployment, name: desktop}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: registry.homelab.lan/browser-desktop:2026-11-24.1
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: DESKTOP_COMMAND, value: desktop-browser}
+      - op: add
+        path: /spec/template/spec/containers/-
+        value:
+          name: cdp-forward
+          image: registry.homelab.lan/browser-desktop:2026-11-24.1   # keep in step with wolf's
+          command: [socat, "TCP-LISTEN:9223,fork,reuseaddr", "TCP:127.0.0.1:9222"]
+          securityContext: {runAsUser: 1000, runAsGroup: 1000, runAsNonRoot: true}
+          ports:
+            - {name: cdp, containerPort: 9223, protocol: TCP}
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 200m, memory: 64Mi}
+  - target: {kind: NetworkPolicy, name: desktop}
+    patch: |-
+      - op: test
+        path: /spec/ingress/0/from/0/ipBlock/cidr
+        value: 192.168.1.0/24
+      # 47300-47399: every port block (templates/desktop/ports), TCP and UDP.
+      - op: add
+        path: /spec/ingress/0/ports
+        value:
+          - {protocol: TCP, port: 47300, endPort: 47399}
+          - {protocol: UDP, port: 47300, endPort: 47399}

@@ -1,0 +1,28 @@
+# Moonlight reaches the desktop from the LAN and over Tailscale, never the internet. Away from
+# home, Tailscale traffic arrives through the subnet router "homelab-lan" (apps/tailscale), whose
+# pod forwards it with its own pod address, hence the third rule. The desktop itself may browse
+# the internet (the job pipeline's Chromium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: desktop
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: desktop}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.168.1.0/24}
+        - ipBlock: {cidr: 100.64.0.0/10}
+        # matchExpressions, not matchLabels: a desktop's overlay adds its homelab.lan/project label
+        # to every matchLabels here, which would then require it on the router's pod too.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: tailscale}
+          podSelector:
+            matchExpressions:
+              - {key: tailscale.com/parent-resource, operator: In, values: [homelab-lan]}
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]

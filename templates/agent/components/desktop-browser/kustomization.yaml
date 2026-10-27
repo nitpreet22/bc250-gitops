@@ -1,0 +1,34 @@
+# A dev pod whose project has a browser desktop (templates/desktop/components/browser). Its Claude
+# Code gets a second Playwright MCP server, "desktop-browser", attached to that desktop's signed-in
+# Chromium, and the submission guard for that server only: submit-like clicks, Enter outside
+# search boxes and coordinate clicks wait for approve_submission, which you approve each time.
+# "playwright" stays headless and unguarded, as in every dev pod.
+#
+#   components: [../../../templates/agent/components/desktop-browser]
+#
+# The overlay also sets DESKTOP_BROWSER_CDP on the agent container (the desktop's Service, e.g.
+# http://my-project-desktop-cdp.ml.svc:9223; agent-entrypoint registers the servers from it) and adds
+# a NetworkPolicy for egress to that desktop's port 9223.
+#
+# managed-settings.json is mounted where Claude Code reads managed settings, read-only: nothing in
+# the pod can remove the guard. Ask rules apply even in bypass mode.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+configMapGenerator:
+  - name: desktop-browser-guard
+    files: [managed-settings.json]
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: desktop-browser-guard
+          mountPath: /etc/claude-code/managed-settings.json
+          subPath: managed-settings.json
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: desktop-browser-guard
+          configMap: {name: desktop-browser-guard}

@@ -1,0 +1,34 @@
+# Port block 4: 47340-47349. Moonlight: add the host as <board IP>:47340.
+# hostPorts on the desktop's board; firewalld opens 47300-47399 to the LAN (bootstrap/02-k3s.sh).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: desktop}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_HTTP_PORT, value: "47340"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_HTTPS_PORT, value: "47341"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_RTSP_SETUP_PORT, value: "47342"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_CONTROL_PORT, value: "47343"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_VIDEO_PING_PORT, value: "47344"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: WOLF_AUDIO_PING_PORT, value: "47345"}
+      - op: add
+        path: /spec/template/spec/containers/0/ports
+        value:
+          - {name: http, containerPort: 47340, hostPort: 47340, protocol: TCP}
+          - {name: https, containerPort: 47341, hostPort: 47341, protocol: TCP}
+          - {name: rtsp, containerPort: 47342, hostPort: 47342, protocol: TCP}
+          - {name: control, containerPort: 47343, hostPort: 47343, protocol: UDP}
+          - {name: video, containerPort: 47344, hostPort: 47344, protocol: UDP}
+          - {name: audio, containerPort: 47345, hostPort: 47345, protocol: UDP}

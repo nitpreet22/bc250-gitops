@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Starts the desktop for a Moonlight stream as the unprivileged user `retro` (uid 1000).
+# Wolf runs the app's run_cmd as root (its process runner ignores WOLF_DEFAULT_RUN_UID), so this
+# wrapper prepares access for the session user and then drops root for good.
+#
+#   desktop-session <command labwc starts inside the desktop>     e.g. desktop-session foot
+#
+# The session: labwc (nested in Wolf's compositor) under its own D-Bus session bus, which also
+# activates the AT-SPI accessibility bus that cua-driver reads. desktop-session-ready records the
+# session's environment in $XDG_RUNTIME_DIR/session.env for processes started with kubectl exec.
+set -euo pipefail
+
+readonly SESSION_USER=retro SESSION_UID=1000 SESSION_GID=1000 SESSION_HOME=/home/retro
+readonly SESSION_RUNTIME=/run/user/$SESSION_UID
+# Wolf's runtime dir holds its Wayland socket and the PulseAudio socket.
+readonly WOLF_RUNTIME=$XDG_RUNTIME_DIR
+if [[ $WAYLAND_DISPLAY == /* ]]; then
+  readonly WOLF_WAYLAND=$WAYLAND_DISPLAY
+else
+  readonly WOLF_WAYLAND=$WOLF_RUNTIME/$WAYLAND_DISPLAY
+fi
+
+# Let the session user connect to Wolf's two sockets; nothing else in that directory opens up.
+chmod o+x "$WOLF_RUNTIME"
+chmod o+rw "$WOLF_WAYLAND"
+if [[ -S ${PULSE_SERVER:-} ]]; then
+  chmod o+rw "$PULSE_SERVER"
+fi
+
+install -d -o "$SESSION_UID" -g "$SESSION_GID" -m 0700 "$SESSION_RUNTIME"
+# The volume's subPath directory is created by root.
+chown "$SESSION_UID:$SESSION_GID" "$SESSION_HOME"
+
+# The GPU render node (devic.es/render) belongs to the host's render group; the session joins it.
+render_gid=$(stat -c %g "${WOLF_RENDER_NODE:-/dev/dri/renderD128}")
+
+echo "[desktop-session] starting labwc as $SESSION_USER (render group $render_gid): $*"
+exec setpriv --reuid="$SESSION_UID" --regid="$SESSION_GID" --groups="$render_gid" \
+  env HOME="$SESSION_HOME" USER="$SESSION_USER" LOGNAME="$SESSION_USER" SHELL=/bin/bash \
+      XDG_RUNTIME_DIR="$SESSION_RUNTIME" WAYLAND_DISPLAY="$WOLF_WAYLAND" \
+  dbus-run-session -- labwc -s "desktop-session-ready $*"

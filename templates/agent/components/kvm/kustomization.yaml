@@ -1,0 +1,10 @@
+# Adds /dev/kvm (hardware virtualization) for the Android emulator, through the render-node
+# plugin's devic.es/kvm. Only bc250-2 has it, which is where dev pods run anyway.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/devic.es~1kvm
+        value: "1"

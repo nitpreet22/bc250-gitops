@@ -1,0 +1,25 @@
+# Streamable desktop for Moonlight (plan Phase 5, templates/desktop).
+#
+# Wolf (games-on-whales, MIT) is the streaming server: it runs its own Wayland compositor, encodes
+# with GStreamer (x264 here; the BC-250 has no working hardware encoder) and injects mouse and
+# keyboard straight into that compositor, so the pod needs no /dev/uinput, udev or privileged mode.
+# Wolf runs as root inside the container; the desktop session
+# itself runs as the unprivileged user `retro` (uid 1000, see desktop-session).
+#
+# On top of Wolf: labwc (a small stacking Wayland compositor) running inside Wolf's display, a
+# terminal, and a session D-Bus with the AT-SPI accessibility bus (read by cua-driver). Project
+# images extend this one with their apps (Chromium, FreeCAD, ...).
+FROM ghcr.io/games-on-whales/wolf@sha256:4c3605e523129d0118c2159736086c7732e2e4777150b3c5f06a175d4a812320
+# ^ wolf:alpha as of 2026-10-27: Fedora 44 with Mesa 26.2.4. wolf:stable (Ubuntu 25.04, Mesa 25.0.7)
+#   can't drive the BC-250 GPU (EGL: "DRI2: failed to create screen"), and that Ubuntu release no
+#   longer gets newer Mesa. alpha is a pre-release tag: pinned by digest, re-test before bumping.
+
+RUN dnf -y install --setopt=install_weak_deps=False labwc foot dejavu-sans-fonts xdg-utils \
+        dbus-daemon at-spi2-core util-linux-core \
+    && dnf clean all \
+    && groupadd -g 1000 retro && useradd -u 1000 -g 1000 -M -d /home/retro -s /bin/bash retro
+
+COPY gstreamer-h264-only.toml /etc/homelab/gstreamer-h264-only.toml
+COPY --chmod=0755 desktop-session desktop-session-ready /usr/local/bin/
+COPY desktop-entrypoint.sh /usr/local/bin/desktop-entrypoint
+ENTRYPOINT ["/usr/local/bin/desktop-entrypoint"]

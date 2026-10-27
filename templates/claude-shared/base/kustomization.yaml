@@ -1,0 +1,81 @@
+# Shared Claude Code setup for every Claude pod: the MCP servers, mods and skills in Forgejo's
+# nitpreet22/claude-shared, kept in step by a claude-sync sidecar (claude-sync.sh), and the API
+# keys those servers use (claude-mcp-keys, mounted at /etc/claude-mcp-keys). templates/agent
+# includes it; a desktop that runs Claude Code adds ../desktop to its components instead.
+#
+# The sidecar needs egress to Forgejo (dev-egress, or a desktop's allow-forgejo-egress) and the
+# internet (npm). It runs in the agent image, which has git, ssh and npm.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+#
+# Messages between agents: /opt/herdr-msg/hl-msg (ls, send <project>) over ssh to `hl relay` on
+# bc250-2, with the relay-only key in /etc/herdr-msg (scripts/new-herdr-msg-key.sh) and the
+# egress to bc250-2:22 in herdr-msg-egress.yaml.
+resources:
+  - claude-mcp-keys.sops.yaml
+  - claude-shared-key.sops.yaml
+  - herdr-msg-key.sops.yaml
+  - herdr-msg-egress.yaml
+configMapGenerator:
+  - name: claude-sync
+    files: [claude-sync.sh]
+  - name: hl-msg
+    files: [hl-msg]
+patches:
+  - target: {kind: Deployment}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/-
+        value:
+          name: claude-sync
+          image: registry.homelab.lan/agent:2026-10-31.2
+          command: [bash, /opt/claude-sync/claude-sync.sh]
+          env:
+            - {name: HOME, value: /tmp}
+          resources:
+            requests: {cpu: 5m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 256Mi}    # npm ci for the jobs and arena servers
+          volumeMounts:
+            - {name: volume, mountPath: /claude-home, subPath: home}
+            - {name: claude-sync, mountPath: /opt/claude-sync, readOnly: true}
+            - {name: claude-shared-key, mountPath: /etc/claude-shared-key, readOnly: true}
+      # Claude Code's container (the first one) reads the keys, and pushes proposals with
+      # claude-share.
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: claude-mcp-keys, mountPath: /etc/claude-mcp-keys, readOnly: true}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: claude-shared-key, mountPath: /etc/claude-shared-key, readOnly: true}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: claude-sync
+          configMap: {name: claude-sync}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: claude-mcp-keys
+          secret: {secretName: claude-mcp-keys, optional: true, defaultMode: 0440}   # readable through fsGroup
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: claude-shared-key
+          secret: {secretName: claude-shared-key, optional: true, defaultMode: 0440}
+      # hl-msg and its relay-only key (messages between agents).
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: herdr-msg-key, mountPath: /etc/herdr-msg, readOnly: true}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: hl-msg, mountPath: /opt/herdr-msg, readOnly: true}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: herdr-msg-key
+          secret: {secretName: herdr-msg-key, optional: true, defaultMode: 0440}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: hl-msg
+          configMap: {name: hl-msg, defaultMode: 0555}

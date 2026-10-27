@@ -1,0 +1,17 @@
+# The dev pod reaches the Kubernetes API (kubectl). The overlay's project label is added to the
+# selector, so only this project's dev pod gets it, not the Jobs it starts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-allow-api-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: agent}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 192.168.1.145/32}
+        - ipBlock: {cidr: 192.168.1.106/32}
+        - ipBlock: {cidr: 192.168.1.172/32}
+      ports:
+        - {protocol: TCP, port: 6443}    # the kubernetes Service resolves to bc250-2's API server

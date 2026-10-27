@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Message another agent's Claude Code from this pod: `hl relay` on bc250-2 (scripts/hl) puts the
+# text into that project's herdr-core terminal, headed with this pod's project as the sender.
+#
+#   /opt/herdr-msg/hl-msg ls                     agents you can message, and what they're doing
+#   /opt/herdr-msg/hl-msg send <project> <<'EOF'
+#   ...the message...
+#   EOF
+#
+# The key (/etc/herdr-msg) works only for the relay; bc250-2's host key is pinned next to it.
+set -euo pipefail
+readonly KEY_DIR=/etc/herdr-msg CORE=server@192.168.1.106
+
+case "${1:-} $#" in
+  "ls 1") remote="msg ls" ;;
+  "send 2") remote="msg send $2" ;;
+  *) sed -n '5,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
+
+# ssh refuses a key file other users can read, and desktops mount it 0444 (they run without
+# fsGroup), so use a private copy for this call only.
+key=$(mktemp)
+trap 'rm -f "$key"' EXIT
+install -m 600 "$KEY_DIR/ssh-privatekey" "$key"
+ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
+  -o UserKnownHostsFile="$KEY_DIR/known_hosts" -o StrictHostKeyChecking=yes "$CORE" "$remote"

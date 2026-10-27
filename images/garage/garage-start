@@ -1,0 +1,44 @@
+#!/bin/sh
+# Starts Garage and, on first start, makes the single node usable; safe on every start:
+#   1. a cluster layout with this node holding GARAGE_CAPACITY (only while there is no layout);
+#   2. the S3 access key from the pod's Secret, imported under its fixed id (if missing);
+#   3. the bucket S3_BUCKET (if missing), readable and writable by that key.
+# Then it waits on the server.
+#
+# Environment: GARAGE_RPC_SECRET, GARAGE_ADMIN_TOKEN (Garage reads them itself), S3_ACCESS_KEY_ID,
+# S3_SECRET_ACCESS_KEY, S3_BUCKET, GARAGE_CAPACITY (e.g. 90G).
+set -eu
+export GARAGE_CONFIG_FILE=/etc/garage.toml
+
+garage server &
+server_pid=$!
+
+# The CLI talks to the local node over RPC once it is up.
+tries=0
+until garage status >/dev/null 2>&1; do
+  tries=$((tries + 1))
+  if [ "$tries" -gt 60 ] || ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "garage-start: the server did not come up" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+node_id=$(garage node id -q | cut -d@ -f1)
+if garage layout show | grep -q "Current cluster layout version: 0"; then
+  garage layout assign -z home -c "$GARAGE_CAPACITY" "$node_id"
+  garage layout apply --version 1
+  echo "garage-start: layout applied ($GARAGE_CAPACITY on node $(echo "$node_id" | cut -c1-16)...)"
+fi
+
+if ! garage key info "$S3_ACCESS_KEY_ID" >/dev/null 2>&1; then
+  garage key import --yes -n "$S3_BUCKET" "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY" >/dev/null
+  echo "garage-start: access key imported"
+fi
+if ! garage bucket info "$S3_BUCKET" >/dev/null 2>&1; then
+  garage bucket create "$S3_BUCKET"
+fi
+garage bucket allow --read --write "$S3_BUCKET" --key "$S3_ACCESS_KEY_ID" >/dev/null
+echo "garage-start: bucket $S3_BUCKET ready"
+
+wait "$server_pid"

@@ -1,0 +1,42 @@
+# templates/claude-shared/base for a desktop (templates/desktop) that runs Claude Code as the
+# session user retro (uid 1000). The desktop pod runs as root and has no fsGroup, so the sidecar
+# runs as retro and the key files are readable by everyone in the pod (it has no other users).
+# The overlay must also set the sidecar's image (containers/1) to its own desktop image: ssh
+# needs a passwd entry for uid 1000, which the agent image lacks and the desktop images have.
+#
+# Patched by index, not by name: a strategic merge would reorder the containers and volumes, and
+# the desktop overlays patch containers/0 (wolf) and volumes by index. The test ops fail the
+# build if templates/desktop or ../base change that order. Desktop volumes 0-2 are volume,
+# runtime and shm; ../base appends claude-sync, claude-mcp-keys, claude-shared-key, herdr-msg-key
+# and hl-msg.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+components:
+  - ../base
+patches:
+  - target: {kind: Deployment}
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/1/name
+        value: claude-sync
+      - op: add
+        path: /spec/template/spec/containers/1/securityContext
+        value: {runAsUser: 1000, runAsGroup: 1000, runAsNonRoot: true}
+      - op: test
+        path: /spec/template/spec/volumes/4/name
+        value: claude-mcp-keys
+      - op: replace
+        path: /spec/template/spec/volumes/4/secret/defaultMode
+        value: 0444
+      - op: test
+        path: /spec/template/spec/volumes/5/name
+        value: claude-shared-key
+      - op: replace
+        path: /spec/template/spec/volumes/5/secret/defaultMode
+        value: 0444
+      - op: test
+        path: /spec/template/spec/volumes/6/name
+        value: herdr-msg-key
+      - op: replace
+        path: /spec/template/spec/volumes/6/secret/defaultMode
+        value: 0444

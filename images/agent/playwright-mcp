@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Playwright MCP (github.com/microsoft/playwright-mcp, Apache-2.0; in /opt/playwright-mcp), the
+# MCP server "playwright" in every Claude Code pod. Two modes:
+#   - PLAYWRIGHT_MCP_CDP_ENDPOINT set: attach to a running Chromium with the person's signed-in
+#     profile: the desktop pods' own session (http://localhost:9222), or, for the "desktop-browser"
+#     server in a dev pod, its project's browser desktop through a Service
+#     (e.g. http://my-project-desktop-cdp.ml.svc:9223, templates/desktop/components/browser);
+#   - otherwise (headless dev pods): launch the image's Chromium headless with its sandbox on.
+#     Playwright adds --disable-dev-shm-usage itself, which the pod's small /dev/shm needs.
+# Snapshots and screenshots go to one output directory with absolute paths in tool results; the
+# submission guard (submission-guard.mjs) reads the snapshots there.
+set -euo pipefail
+
+readonly CLI=/opt/playwright-mcp/node_modules/@playwright/mcp/cli.js
+readonly OUTPUT_DIR=${PLAYWRIGHT_MCP_OUTPUT_DIR:-$HOME/.cache/playwright-mcp/output}
+mkdir -p "$OUTPUT_DIR"
+common=(--output-dir "$OUTPUT_DIR" --file-paths absolute)
+
+# Chromium answers DevTools requests only when their Host header is an IP address or localhost
+# (DNS-rebinding protection), so a host name in the endpoint is swapped for its IPv4 address. A
+# Service's ClusterIP stays the same while the desktop behind it is scaled to zero.
+endpoint_with_ip() {   # <http://host:port...>
+  local url=$1
+  if [[ ! $url =~ ^(https?://)([^/:]+)(.*)$ ]]; then
+    echo "$url"
+    return
+  fi
+  local scheme=${BASH_REMATCH[1]} host=${BASH_REMATCH[2]} rest=${BASH_REMATCH[3]} address
+  if [[ $host == localhost || $host =~ ^[0-9.]+$ ]]; then
+    echo "$url"
+    return
+  fi
+  address=$(getent ahostsv4 "$host" | awk 'NR == 1 {print $1}')
+  if [[ -z $address ]]; then
+    echo "playwright-mcp: can't resolve $host from PLAYWRIGHT_MCP_CDP_ENDPOINT" >&2
+    return 1
+  fi
+  echo "$scheme$address$rest"
+}
+
+if [[ -n ${PLAYWRIGHT_MCP_CDP_ENDPOINT:-} ]]; then
+  cdp_endpoint=$(endpoint_with_ip "$PLAYWRIGHT_MCP_CDP_ENDPOINT")
+  exec node "$CLI" --cdp-endpoint "$cdp_endpoint" "${common[@]}" "$@"
+fi
+exec node "$CLI" --headless --sandbox --executable-path "$(command -v chromium-browser)" "${common[@]}" "$@"

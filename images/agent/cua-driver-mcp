@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# cua-driver (github.com/trycua/cua, libs/cua-driver, MIT; in /opt/cua-driver), the MCP server
+# "cua-driver" for native apps: windows, accessibility trees (AT-SPI on Linux), clicks, typing,
+# screenshots, in the background without taking focus. Telemetry off.
+#
+# In a desktop pod it drives the session's apps (agent-attach takes DISPLAY/WAYLAND_DISPLAY and the
+# session bus from session.env). A headless dev pod has no display: list_windows finds none. There
+# this runs on its own session D-Bus, on which D-Bus starts at-spi2-core's accessibility bus when
+# cua-driver asks for it; the bus ends with the server.
+export DO_NOT_TRACK=1 CUA_TELEMETRY=off
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v dbus-run-session >/dev/null; then
+  exec dbus-run-session -- /opt/cua-driver/cua-driver mcp "$@"
+fi
+exec /opt/cua-driver/cua-driver mcp "$@"

@@ -1,0 +1,18 @@
+# Tools for the nightly backup Jobs (restic to the server on bc250-3, sqlite3 for consistent
+# database copies, su-exec to copy as the app's uid) and for game servers'
+# scheduled jobs (rcon-cli: save-off/save-on around a world backup). Built by
+#   bootstrap/build-image.sh backup <tag>
+# Installed at build time, not in the Job: NetworkPolicies take a few seconds to apply to a new
+# pod, so a Job that downloads packages at start only works by winning that race.
+FROM docker.io/library/alpine:3.24.3
+RUN apk add --no-cache restic sqlite su-exec
+
+# itzg/rcon-cli (Apache-2.0), the RCON client from itzg's game-server images.
+ARG RCON_CLI_VERSION=1.7.8
+ARG RCON_CLI_SHA256=49b7f633b06a943da9d746501ef5dd314e86ef2a42e43eef8d93bc3c543d3a5c
+RUN wget -q -O /tmp/rcon-cli.tar.gz \
+        "https://github.com/itzg/rcon-cli/releases/download/${RCON_CLI_VERSION}/rcon-cli_${RCON_CLI_VERSION}_linux_amd64.tar.gz" \
+    && echo "${RCON_CLI_SHA256}  /tmp/rcon-cli.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/rcon-cli.tar.gz -C /usr/local/bin rcon-cli \
+    && rm /tmp/rcon-cli.tar.gz \
+    && rcon-cli --help >/dev/null

@@ -1,0 +1,25 @@
+# Reusable Claude Code dev pod (plan Phase 4, "Agent template"). A project uses it from
+# apps/<namespace>/<project>/kustomization.yaml:
+#
+#   resources: [../../../templates/agent, git-deploy-key.sops.yaml]
+#   namePrefix: <project>-
+#   labels: [{pairs: {homelab.lan/project: <project>}, includeSelectors: true}]
+#   patches: set REPO_URL / REPO_DIR (and resources if needed)
+#   components: [../../../templates/agent/components/gpu]   # GPU projects only
+#
+# The namespace must hold a claude-auth Secret (key: token, from `claude setup-token`). The
+# claude-shared component adds the shared MCP servers, mods and skills (templates/claude-shared).
+# Start, stop and attach with scripts/hl.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs:
+      homelab.lan/tier: dev
+      homelab.lan/component: dev-pod
+    includeSelectors: false
+    includeTemplates: true      # the pod needs tier=dev for the dev-egress NetworkPolicy
+resources:
+  - pvc.yaml
+  - deployment.yaml
+components:
+  - ../claude-shared/base   # shared MCP servers, mods and skills (nitpreet22/claude-shared)

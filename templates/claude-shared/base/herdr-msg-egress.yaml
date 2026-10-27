@@ -1,0 +1,18 @@
+# Lets Claude pods reach bc250-2's sshd for hl-msg (the relay key in /etc/herdr-msg works only
+# for `hl relay`). Selects Claude Code's pods by component (templates/agent: dev-pod,
+# templates/desktop: desktop), so a namespace's other services (websites, dashboards) don't get
+# this path. Each project adds its own copy; in a shared namespace they're identical.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: herdr-msg-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: homelab.lan/component, operator: In, values: [dev-pod, desktop]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 192.168.1.106/32}
+      ports:
+        - {protocol: TCP, port: 22}

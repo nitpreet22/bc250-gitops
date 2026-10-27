@@ -1,0 +1,23 @@
+# Lets a dev pod run batch Jobs (backtests, data pulls) in its own namespace, and nothing else:
+# a ServiceAccount that may create, watch and delete Jobs and read their pods and logs, plus
+# egress to the Kubernetes API for this project's dev pod only.
+#
+#   components: [../../../templates/agent/components/job-runner]
+#
+# The namespace also needs the dev-pod-jobs admission policy (infrastructure/policies), which
+# limits what those Jobs may contain: priority batch, no Secrets, no ServiceAccount token, no
+# host access, and only this project's volumes.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - rbac.yaml
+  - allow-api-egress.yaml
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: agent
+      - op: add
+        path: /spec/template/spec/automountServiceAccountToken
+        value: true

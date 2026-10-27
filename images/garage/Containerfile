@@ -1,0 +1,16 @@
+# S3-compatible object store for the cluster (plan Phase 6, ml: DVC remote for ML datasets and
+# models). Garage (Deuxfleurs, AGPL-3.0) single node, in place of MinIO, whose community edition
+# stopped shipping images in October 2025 and is archived. Built by
+#   bootstrap/build-image.sh garage <tag>
+#
+# The official image holds only the static binary (no shell), so it is copied onto Alpine with
+# garage-start, which bootstraps the node on first start (layout, key, bucket) and then serves.
+FROM docker.io/dxflrs/garage:v2.5.0@sha256:23b16d34e0348d9aca9b960a7429a7e6d494974b5288bfb8f6c3ab856895f71e AS garage
+
+FROM docker.io/library/alpine:3.22@sha256:dc92f017beea8e7f43263073d717f7bc011228c95d5312e440deb4d035bb4eec
+COPY --from=garage /garage /usr/local/bin/garage
+COPY garage.toml /etc/garage.toml
+COPY --chmod=0755 garage-start /usr/local/bin/garage-start
+# An unprivileged uid with no account on the boards; the data volume is group-writable via fsGroup.
+USER 10001
+ENTRYPOINT ["/usr/local/bin/garage-start"]

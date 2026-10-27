@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Chromium for a browser desktop, started inside the desktop session (DESKTOP_COMMAND):
+#   - a persistent profile on the desktop's volume, so the logins you make over Moonlight survive
+#     restarts;
+#   - accessibility on, so the page is in the AT-SPI tree as well;
+#   - the DevTools port on localhost (9222). The cdp-forward sidecar offers it on 9223 to the
+#     project's dev pod only (templates/desktop/components/browser).
+set -euo pipefail
+readonly PROFILE=$HOME/.config/chromium
+
+# Chromium refuses to open a profile whose lock names another computer ("<hostname>-<pid>"), and
+# the lock stays on the volume when the pod is replaced. The Deployment runs one pod at a time
+# (Recreate), so a lock naming any other hostname is stale.
+lock_owner=$(readlink "$PROFILE/SingletonLock" 2>/dev/null || true)
+if [[ -n $lock_owner && ${lock_owner%-*} != "$HOSTNAME" ]]; then
+  echo "desktop-browser: removing the stale profile lock left by $lock_owner"
+  rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonSocket" "$PROFILE/SingletonCookie"
+fi
+
+exec chromium-browser \
+  --ozone-platform=wayland \
+  --user-data-dir="$PROFILE" \
+  --remote-debugging-port=9222 \
+  --force-renderer-accessibility \
+  --no-first-run --no-default-browser-check \
+  "$@"

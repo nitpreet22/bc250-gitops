@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  annotations:
+    # hl up / hl down own the replica count, Flux owns everything else. Flux resets every field
+    # that is in the manifest, so replicas is left out of it, and Merge keeps the value hl sets.
+    # Side effect: a newly added project starts once (Kubernetes defaults replicas to 1); stop it
+    # with `hl down <project>` after checking its first clone.
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  strategy: {type: Recreate}      # the volume is ReadWriteOnce
+  selector:
+    matchLabels: {app.kubernetes.io/name: agent}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: agent}
+    spec:
+      priorityClassName: agent
+      # No nodeSelector: the scheduler prefers bc250-2 (the other boards carry a PreferNoSchedule
+      # taint, homelab.lan/on-demand) and uses another board only when bc250-2 is full. The volume
+      # is created on the board where the pod first runs, and keeps it there.
+      enableServiceLinks: false
+      securityContext:
+        # uid 10000 has no account on any board, so the pod's user is never the boards' admin
+        # (uid 1000). Claude Code won't skip permission prompts as root.
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        runAsNonRoot: true
+      containers:
+        - name: agent
+          image: registry.homelab.lan/agent:2026-11-24.1
+          env:
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef: {name: claude-auth, key: token, optional: true}
+            - {name: REPO_URL, value: ""}          # set by the project overlay
+            - {name: REPO_DIR, value: /workspace/project}
+            - {name: GIT_USER_NAME, value: "homelab agent"}
+            - {name: GIT_USER_EMAIL, value: agent@homelab.lan}
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "4", memory: 3Gi}
+          volumeMounts:
+            - {name: volume, mountPath: /home/agent, subPath: home}
+            - {name: volume, mountPath: /workspace, subPath: workspace}
+            - {name: git-deploy-key, mountPath: /etc/git-deploy-key, readOnly: true}
+      volumes:
+        - name: volume
+          persistentVolumeClaim: {claimName: agent-volume}
+        - name: git-deploy-key
+          secret:
+            secretName: git-deploy-key
+            optional: true
+            defaultMode: 0440     # readable by the agent through fsGroup

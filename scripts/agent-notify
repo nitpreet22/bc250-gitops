@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""agent-notify: push to your phone (ntfy) when an agent in herdr-core needs you or finishes.
+
+  agent-notify             follow `hc events` on this machine and push (runs as a service)
+  agent-notify --test      send one test push and exit
+
+Runs beside each herdr-core: on bc250-2 as the user service agent-notify (bootstrap/05-herdr.sh),
+on the PC from a Startup-folder shortcut (scripts/install-agent-notify.ps1), logging to
+agent-notify.log beside its config there. Claude Code reports its own state to herdr-core (OSC 7501:
+working, blocked, done, idle, error); this turns three changes into a push:
+
+  blocked                  "<project> needs you"  priority 5 (urgent: through Do Not Disturb), tag warning
+  working -> done          "<project> finished"   priority 3, tag white_check_mark
+  error                    "<project> hit an error" priority 5, tag x
+
+The phone gives each ntfy priority its own channel, with its own sound and vibration (set on the
+phone): 5 plays the Herdr app's "needs you" sound with ntfy's long vibration, 3 its "finished"
+sound with Samsung's short default vibration (ntfy's channel for 4 has a fixed ~3 s pattern that
+can't be shortened). An error also needs you to look, so it is 5. Priority 3 used to wait while
+the phone slept (Doze with Firebase delivery); the topic uses ntfy's Instant delivery since
+2026-11-10, which delivers it at once.
+
+Not pushed: idle (an agent going idle after a start or reattach is not news, and was what made
+the old herdr plugin send ~20 pushes in 4 s on 2026-11-05), the opening snapshot of every
+terminal (so a restart of this service or of the core sends nothing), the same push for the
+same terminal within REPEAT_WINDOW_S, and anything past MAX_PER_MINUTE.
+
+The body has Claude's task title (the terminal title it sets), its status message when it gives
+one, and the machine. The Herdr phone app has no deep links, so a tap can't open an agent: answer
+in the Herdr app.
+
+Configuration, from the environment or a KEY=value file (environment wins):
+  Linux:   ~/.config/agent-notify/env        Windows: %APPDATA%\\agent-notify\\env
+  NTFY_URL     default https://ntfy.sh
+  NTFY_TOPIC   required; without it nothing is pushed (logged only)
+  NTFY_TOKEN   optional bearer token
+  HC           path of hc (default: hc on PATH, else herdr-core's install folder)
+"""
+import argparse
+import json
+import os
+import platform
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+# hc is a console program: started from the windowless pythonw (the PC's Startup shortcut), Windows
+# would give it a console window of its own, sitting in the taskbar. 0 elsewhere.
+NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+REPEAT_WINDOW_S = 120
+MAX_PER_MINUTE = 6
+RECONNECT_DELAY_S = 10
+
+
+@dataclass(frozen=True)
+class Push:
+    kind: str          # "needs_you", "finished" or "error"
+    title: str
+    message: str
+    priority: int
+    tags: tuple
+
+
+STYLE = {
+    "needs_you": ("needs you", 5, ("warning",)),
+    "finished": ("finished", 3, ("white_check_mark",)),
+    "error": ("hit an error", 5, ("x",)),
+}
+
+
+def push_kind(previous_state, state):
+    """Which push a status change deserves, or None. previous_state is None for a terminal
+    first seen after the opening snapshot (a new one)."""
+    if state == "blocked" and previous_state != "blocked":
+        return "needs_you"
+    if state == "done" and previous_state == "working":
+        return "finished"
+    if state == "error" and previous_state != "error":
+        return "error"
+    return None
+
+
+def agent_name(terminal):
+    """The name you know the agent by: hl's project, the terminal's name, or the Herdr space
+    (the `where` label is "<space> / <tab>"), else its address."""
+    labels = terminal.get("labels") or {}
+    if labels.get("hl.tab"):
+        return labels["hl.tab"]
+    if terminal.get("name"):
+        return terminal["name"]
+    where = labels.get("where", "")
+    if where:
+        return where.split(" / ")[0]
+    return terminal.get("address", "an agent")
+
+
+def task_title(terminal):
+    """Claude's title for the conversation, without its leading spinner or star."""
+    return re.sub(r"^[^\w(\[]+", "", terminal.get("title") or "").strip()
+
+
+def build_push(kind, terminal, status, machine):
+    verb, priority, tags = STYLE[kind]
+    lines = []
+    title = task_title(terminal)
+    if title and title.lower() not in ("claude code", agent_name(terminal).lower()):
+        lines.append(title)
+    message = (status or {}).get("msg", "").strip()
+    if message and message != title:
+        lines.append(message)
+    lines.append(f"on {machine} · answer in the Herdr app")
+    return Push(kind, f"{agent_name(terminal)} {verb}", "\n".join(lines), priority, tags)
+
+
+class Limiter:
+    """Drops a repeat of the same push for the same terminal within REPEAT_WINDOW_S, and
+    everything past MAX_PER_MINUTE."""
+
+    def __init__(self):
+        self.last_sent = {}    # (terminal, kind) -> time
+        self.recent = []       # send times within the last minute
+
+    def allow(self, terminal_address, kind, now):
+        key = (terminal_address, kind)
+        if now - self.last_sent.get(key, float("-inf")) < REPEAT_WINDOW_S:
+            return False
+        self.recent = [t for t in self.recent if now - t < 60]
+        if len(self.recent) >= MAX_PER_MINUTE:
+            return False
+        self.last_sent[key] = now
+        self.recent.append(now)
+        return True
+
+
+def is_remote(address):
+    """A core also streams the terminals of machines it is connected to, as "<machine>/t7" (the
+    PC's core includes bc250-2's). That machine's own agent-notify pushes those, so pushing them
+    here too would send each twice (seen 2026-11-10), labelled with the wrong machine."""
+    return "/" in address
+
+
+class Watcher:
+    """Folds `hc events` lines into each terminal's last known record and decides on pushes."""
+
+    def __init__(self, machine):
+        self.machine = machine
+        self.terminals = {}    # address -> {address, name, title, labels, state}
+        self.limiter = Limiter()
+
+    def handle(self, event, now):
+        """Returns the pushes this event line causes (usually none)."""
+        if "terminals" in event:   # the opening snapshot: remember, never push
+            for terminal in event["terminals"]:
+                if is_remote(terminal["address"]):
+                    continue
+                record = {k: terminal.get(k) for k in ("address", "name", "title", "labels")}
+                record["state"] = (terminal.get("status") or {}).get("state")
+                self.terminals[terminal["address"]] = record
+            return []
+        params = event.get("params") or {}
+        address, kind, data = params.get("terminal"), params.get("type"), params.get("data") or {}
+        if not address or not kind or is_remote(address):
+            return []
+        record = self.terminals.setdefault(
+            address, {"address": address, "name": None, "title": None, "labels": {}, "state": None})
+        if kind == "labels":
+            record["labels"] = data.get("labels") or {}
+        elif kind == "title":
+            record["title"] = data.get("title")
+        elif kind in ("created", "terminal"):
+            for key in ("name", "title", "labels"):
+                if key in data:
+                    record[key] = data[key]
+        elif kind == "status":
+            status = data.get("status") or {}
+            state = status.get("state")
+            push = push_kind(record["state"], state)
+            record["state"] = state
+            if push and self.limiter.allow(address, push, now):
+                return [build_push(push, record, status, self.machine)]
+        return []
+
+
+def config_dir():
+    if platform.system() == "Windows":
+        return Path(os.environ.get("APPDATA", "")) / "agent-notify"
+    return Path.home() / ".config" / "agent-notify"
+
+
+def load_config():
+    path = config_dir() / "env"
+    config = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.split("=", 1)
+                config[key.strip()] = value.strip()
+    for key in ("NTFY_URL", "NTFY_TOPIC", "NTFY_TOKEN", "HC"):
+        if os.environ.get(key):
+            config[key] = os.environ[key]
+    config.setdefault("NTFY_URL", "https://ntfy.sh")
+    return config
+
+
+def hc_path(config):
+    if config.get("HC"):
+        return config["HC"]
+    found = shutil.which("hc")
+    if found:
+        return found
+    windows_install = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "herdr-core" / "hc.exe"
+    return str(windows_install) if windows_install.is_file() else "hc"
+
+
+def log(text):
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}"
+    if sys.stderr is not None:
+        print(line, file=sys.stderr, flush=True)   # the journal, on bc250-2
+    else:   # pythonw (the PC's Startup shortcut) has no console: a file beside the config
+        with open(config_dir() / "agent-notify.log", "a", encoding="utf-8") as log_file:
+            log_file.write(line + "\n")
+
+
+def publish(config, push):
+    if not config.get("NTFY_TOPIC"):
+        log(f"not pushed (NTFY_TOPIC unset): {push.title}")
+        return
+    body = json.dumps({"topic": config["NTFY_TOPIC"], "title": push.title, "message": push.message,
+                       "priority": push.priority, "tags": list(push.tags)}).encode()
+    headers = {"Content-Type": "application/json"}
+    if config.get("NTFY_TOKEN"):
+        headers["Authorization"] = f"Bearer {config['NTFY_TOKEN']}"
+    request = urllib.request.Request(config["NTFY_URL"].rstrip("/"), data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+        log(f"pushed: {push.title}")
+    except OSError as error:   # a failed push is logged, never fatal
+        log(f"push failed ({error}): {push.title}")
+
+
+def follow(config, machine):
+    """Follows hc events until it ends (core restart), then starts again with a fresh snapshot."""
+    while True:
+        watcher = Watcher(machine)
+        log(f"following {hc_path(config)} events")
+        try:
+            with subprocess.Popen([hc_path(config), "events", "--json"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                  creationflags=NO_CONSOLE_WINDOW) as events:
+                for line in events.stdout:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    for push in watcher.handle(event, time.monotonic()):
+                        publish(config, push)
+        except OSError as error:
+            log(f"hc events failed: {error}")
+        log(f"hc events ended; again in {RECONNECT_DELAY_S} s")
+        time.sleep(RECONNECT_DELAY_S)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--test", action="store_true", help="send one test push and exit")
+    options = parser.parse_args()
+    config = load_config()
+    machine = socket.gethostname().split(".")[0].lower()   # Windows reports DESKTOP-1
+    if options.test:
+        publish(config, Push("finished", "agent-notify test",
+                             f"on {machine} · if you see this, pushes work", 3, ("tada",)))
+        return
+    follow(config, machine)
+
+
+if __name__ == "__main__":
+    main()

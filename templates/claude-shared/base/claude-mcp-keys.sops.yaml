@@ -1,0 +1,24 @@
+# Template. The live cluster keeps this Secret SOPS-encrypted with age; this public copy has
+# placeholders instead. Fill in each REPLACE_ME, then: sops --encrypt --in-place <this file>
+# (the rules are in .sops.yaml).
+# API keys for the shared MCP servers (nitpreet22/claude-shared, plugins/homelab/.mcp.json).
+# Each key is a file in /etc/claude-mcp-keys/ in every Claude Code pod; bin/mcp-key reads it when
+# a server starts. Fill from the PC's keyring with scripts/fill-mcp-keys.mjs; an empty key only
+# stops its own server. A new key: add it here and to that script's KEYS list.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: claude-mcp-keys # each project's namePrefix makes this <project>-claude-mcp-keys
+type: Opaque
+stringData:
+    context7: REPLACE_ME
+    exa: REPLACE_ME
+    github: REPLACE_ME
+    huggingface: REPLACE_ME
+    consensus: REPLACE_ME
+    firecrawl: REPLACE_ME
+    apify: REPLACE_ME
+    adzuna: REPLACE_ME
+    jooble: REPLACE_ME
+    arena: REPLACE_ME
+    fal: REPLACE_ME

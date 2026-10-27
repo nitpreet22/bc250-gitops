@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: desktop
+  annotations:
+    # hl up / hl down own the replica count (see templates/agent/deployment.yaml).
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: desktop}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: desktop}
+    spec:
+      priorityClassName: agent
+      # No nodeSelector: bc250-2 first, another board when it's full (see templates/agent).
+      enableServiceLinks: false
+      containers:
+        - name: wolf
+          image: registry.homelab.lan/desktop:2026-10-28.1
+          env:
+            - {name: DESKTOP_NAME, value: homelab-desktop}
+            - {name: WOLF_DEFAULT_RUN_UID, value: "1000"}
+            - {name: WOLF_DEFAULT_RUN_GID, value: "1000"}
+            - {name: WOLF_RENDER_NODE, value: /dev/dri/renderD128}
+            # This instance's ports come from a ports/<block> component.
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "4", memory: 3Gi, devic.es/render: "1"}
+          volumeMounts:
+            - {name: volume, mountPath: /etc/wolf, subPath: wolf}
+            - {name: volume, mountPath: /home/retro, subPath: home}
+            - {name: runtime, mountPath: /run/user/wolf}
+            - {name: shm, mountPath: /dev/shm}       # Chromium needs a real /dev/shm
+      volumes:
+        - name: volume
+          persistentVolumeClaim: {claimName: desktop-volume}
+        - name: runtime
+          emptyDir: {}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 1Gi}

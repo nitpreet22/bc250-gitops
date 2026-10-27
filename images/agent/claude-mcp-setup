@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Registers this pod's browser and desktop MCP servers with Claude Code (user scope, so in
+# ~/.claude.json on the pod's volume), replacing what an older image registered:
+#   playwright        web pages (playwright-mcp launcher)
+#   cua-driver        native apps (cua-driver-mcp launcher)
+#   desktop-browser   with --desktop-browser: a second Playwright MCP, attached over CDP to the
+#                     signed-in Chromium in this project's browser desktop (a dev pod with
+#                     templates/agent/components/desktop-browser); "playwright" stays headless
+#   submission-guard  approve_submission, with --guard or --desktop-browser (pods whose managed
+#                     settings turn the guard on)
+# and removes "desktop" (desktop-mcp, which these replace). Run at every start; the servers are
+# re-registered each time, so a volume always matches the image it runs in.
+#
+#   claude-mcp-setup [--cdp-endpoint <url>] [--guard] [--desktop-browser <url>]
+set -euo pipefail
+
+readonly USAGE="usage: claude-mcp-setup [--cdp-endpoint <url>] [--guard] [--desktop-browser <url>]"
+# desktop-browser's snapshots, apart from the headless browser's: the submission guard reads them
+# here (the hook command in components/desktop-browser names the same directory).
+readonly DESKTOP_BROWSER_OUTPUT_DIR=$HOME/.cache/desktop-browser/output
+
+cdp_endpoint=""
+desktop_browser_endpoint=""
+guard=false
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --cdp-endpoint) cdp_endpoint=$2; shift 2 ;;
+    --guard) guard=true; shift ;;
+    --desktop-browser) desktop_browser_endpoint=$2; guard=true; shift 2 ;;
+    *) echo "$USAGE" >&2; exit 2 ;;
+  esac
+done
+
+register() {   # <name> <json>
+  claude mcp remove -s user "$1" >/dev/null 2>&1 || true
+  claude mcp add-json -s user "$1" "$2" >/dev/null
+}
+
+unregister() {   # <name>
+  claude mcp remove -s user "$1" >/dev/null 2>&1 || true
+}
+
+unregister desktop
+
+if [[ -n $cdp_endpoint ]]; then
+  register playwright "$(jq -cn --arg url "$cdp_endpoint" \
+    '{type: "stdio", command: "/usr/local/bin/playwright-mcp", env: {PLAYWRIGHT_MCP_CDP_ENDPOINT: $url}}')"
+else
+  register playwright '{"type":"stdio","command":"/usr/local/bin/playwright-mcp"}'
+fi
+register cua-driver '{"type":"stdio","command":"/usr/local/bin/cua-driver-mcp"}'
+if [[ -n $desktop_browser_endpoint ]]; then
+  register desktop-browser "$(jq -cn --arg url "$desktop_browser_endpoint" --arg output "$DESKTOP_BROWSER_OUTPUT_DIR" \
+    '{type: "stdio", command: "/usr/local/bin/playwright-mcp",
+      env: {PLAYWRIGHT_MCP_CDP_ENDPOINT: $url, PLAYWRIGHT_MCP_OUTPUT_DIR: $output}}')"
+else
+  unregister desktop-browser
+fi
+if [[ $guard == true ]]; then
+  register submission-guard '{"type":"stdio","command":"/usr/local/bin/submission-guard","args":["mcp"]}'
+else
+  unregister submission-guard
+fi

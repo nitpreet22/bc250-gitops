@@ -1,0 +1,11 @@
+# One volume per project: /workspace (the git checkout) and /home/agent (Claude Code's config,
+# .claude.json and session history, so `claude --continue` survives restarts and scale-to-zero).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-volume
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 20Gi}

@@ -1,0 +1,9 @@
+# Adds the virtual-input device (/dev/uinput) for virtual gamepads. Use with the gpu component.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources/limits/devic.es~1uinput
+        value: "1"

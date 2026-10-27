@@ -1,0 +1,22 @@
+# Reusable Moonlight desktop (plan Phase 5). An instance uses it from
+# apps/<namespace>/<instance>/kustomization.yaml:
+#
+#   resources: [../../../templates/desktop]
+#   namePrefix: <instance>-
+#   labels: [{pairs: {homelab.lan/project: <instance>}, includeSelectors: true}]
+#   components: [../../../templates/desktop/ports/<block>]   # its own port block, see ports/
+#   patches: DESKTOP_NAME, image (project apps), resources if needed
+#
+# Start and stop it with `hl up/down <instance>`. Pair once from Moonlight (README: "Desktops").
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs:
+      homelab.lan/component: desktop
+      homelab.lan/tier: service
+    includeSelectors: false
+    includeTemplates: true
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - network-policy.yaml
