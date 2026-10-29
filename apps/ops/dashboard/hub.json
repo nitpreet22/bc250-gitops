@@ -1,0 +1,33 @@
+{
+  "listen": "0.0.0.0:9880",
+  "stateDir": "/var/lib/homelab-hub",
+  "nodes": [
+    {
+      "name": "pi4",
+      "url": "http://192.168.1.66:9877"
+    },
+    {
+      "name": "bc250-1",
+      "url": "http://192.168.1.145:9877"
+    },
+    {
+      "name": "bc250-2",
+      "url": "http://192.168.1.106:9877"
+    },
+    {
+      "name": "bc250-3",
+      "url": "http://192.168.1.172:9877"
+    }
+  ],
+  "endpoints": [],
+  "certificates": [],
+  "thresholds": {
+    "tempWarnCelsius": 80,
+    "tempCritCelsius": 85
+  },
+  "cluster": {
+    "kubernetes": "in-cluster",
+    "metricsUrl": "http://vmsingle.monitoring.svc:8428",
+    "alertmanagerUrl": "http://alertmanager.monitoring.svc:9093"
+  }
+}

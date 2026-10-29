@@ -1,0 +1,13 @@
+# LAN access: http://192.168.1.106:30880. externalTrafficPolicy Local keeps the browser's own
+# address as the source (so the NetworkPolicy can check it) and answers only on the hub's board.
+# Tailnet access comes from the Tailscale operator once it is enabled.
+apiVersion: v1
+kind: Service
+metadata:
+  name: homelab-hub
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector: {app.kubernetes.io/name: homelab-hub}
+  ports:
+    - {name: http, port: 80, targetPort: http, nodePort: 30880}

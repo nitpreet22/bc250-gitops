@@ -1,0 +1,23 @@
+# Subnet router "homelab-lan": makes the three boards' LAN addresses reachable from your tailnet
+# devices anywhere, so Moonlight away from home uses the same host entries as at home
+# (<board IP>:<port block>, e.g. 192.168.1.106:47300). One /32 per board rather than the whole
+# 192.168.1.0/24: only the boards, not the router or the rest of the LAN.
+#
+# Devices that are at home all the time should not use these routes: Windows and macOS accept
+# subnet routes by default and prefer them over the LAN, which would send the PC's own traffic to
+# the boards (kubectl included) through this pod. The PC has "Use Tailscale subnets" turned off
+# (`tailscale set --accept-routes=false`); phones and laptops that leave the house keep it on.
+#
+# The routes need approving once in the Tailscale admin console (Machines → homelab-lan → Edit
+# route settings). Desktops admit this router's pod in their NetworkPolicy (templates/desktop).
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: homelab-lan
+spec:
+  hostname: homelab-lan
+  subnetRouter:
+    advertiseRoutes:
+      - 192.168.1.145/32   # bc250-1
+      - 192.168.1.106/32   # bc250-2
+      - 192.168.1.172/32   # bc250-3

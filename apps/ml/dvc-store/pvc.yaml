@@ -1,0 +1,10 @@
+# Garage's metadata and the stored objects (footage, checkpoints): ~26 GiB to start.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: {storage: 100Gi}

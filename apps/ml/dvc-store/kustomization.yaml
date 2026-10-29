@@ -1,0 +1,22 @@
+# S3-compatible store for DVC (plan Phase 6, ml): ML projects' datasets, labels and model checkpoints
+# are versioned with DVC in Git and their data lives here, at home, never on a cloud drive.
+# Garage single node (images/garage) on bc250-2 with a 100 GiB volume.
+#   - from the PC (dvc push/pull): http://192.168.1.106:3900 (hostPort, LAN and Tailscale only)
+#   - from ml pods: http://dvc-store-s3.ml.svc:3900
+# Region "garage", path-style addressing. Secrets (scripts/new-dvc-store-secrets.sh): the node's
+# own (garage) and the bucket's access key (s3-dvc), which ML dev pods also read.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ml
+namePrefix: dvc-store-
+labels:
+  - pairs: {homelab.lan/project: dvc-store, homelab.lan/tier: service}
+    includeSelectors: false
+    includeTemplates: true
+resources:
+  - deployment.yaml
+  - service.yaml
+  - pvc.yaml
+  - network-policy.yaml
+  - garage.sops.yaml
+  - s3-dvc.sops.yaml

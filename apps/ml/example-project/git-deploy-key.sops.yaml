@@ -1,0 +1,11 @@
+# Template. The live cluster keeps this Secret SOPS-encrypted with age; this public copy has
+# placeholders instead. Fill in each REPLACE_ME, then: sops --encrypt --in-place <this file>
+# (the rules are in .sops.yaml).
+apiVersion: v1
+kind: Secret
+metadata:
+    name: git-deploy-key # the overlay's namePrefix makes this <project>-git-deploy-key
+    namespace: ml
+type: kubernetes.io/ssh-auth
+stringData:
+    ssh-privatekey: REPLACE_ME

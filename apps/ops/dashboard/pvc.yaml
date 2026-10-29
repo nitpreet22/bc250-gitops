@@ -1,0 +1,9 @@
+# The hub's saved state: an hour of metric history, 24 h of endpoint results and the event log.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: homelab-hub-state
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}

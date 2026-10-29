@@ -1,0 +1,12 @@
+# Template. The live cluster keeps this Secret SOPS-encrypted with age; this public copy has
+# placeholders instead. Fill in each REPLACE_ME, then: sops --encrypt --in-place <this file>
+# (the rules are in .sops.yaml).
+apiVersion: v1
+kind: Secret
+metadata:
+    name: s3-dvc # the overlay's namePrefix makes this dvc-store-s3-dvc
+    namespace: ml
+type: Opaque
+stringData:
+    access_key_id: REPLACE_ME
+    secret_access_key: REPLACE_ME

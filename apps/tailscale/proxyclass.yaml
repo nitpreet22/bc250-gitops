@@ -1,0 +1,12 @@
+# Settings for every Tailscale proxy pod the operator creates (infrastructure/optional/tailscale
+# makes this the default ProxyClass). It lives under apps/ because its kind comes from the
+# operator's chart, which the infrastructure Kustomization installs first.
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: homelab
+spec:
+  statefulSet:
+    pod:
+      # Same class as the operator: these proxies are the way in from outside the house.
+      priorityClassName: platform

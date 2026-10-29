@@ -1,0 +1,18 @@
+# S3 only, from the LAN (the PC's dvc push/pull), Tailscale and pods in ml (dev pods, and Jobs
+# using presigned URLs). The store makes no outbound connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-s3
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: dvc-store}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.168.1.0/24}
+        - ipBlock: {cidr: 100.64.0.0/10}
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 3900}
+  egress: []

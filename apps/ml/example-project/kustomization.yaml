@@ -1,0 +1,23 @@
+# Example project: how a dev pod is declared. Copy this folder to apps/<namespace>/<project>/,
+# replace example-project, add the folder to that namespace's kustomization.yaml, and create the
+# repo's deploy key (git-deploy-key.sops.yaml). `hl up example-project` then starts the pod with
+# the repo cloned into /workspace; `hl down` stops it and the volume keeps the work.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ml
+namePrefix: example-project-
+labels:
+  - pairs: {homelab.lan/project: example-project}
+    includeSelectors: true
+resources:
+  - ../../../templates/agent
+  - git-deploy-key.sops.yaml
+patches:
+  - target: {kind: Deployment, name: agent}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: ssh://git@forgejo-ssh.forgejo.svc:22/nitpreet22/example-project.git
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: /workspace/example-project

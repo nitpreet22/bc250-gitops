@@ -1,0 +1,23 @@
+# The page is for the LAN and the tailnet only (the router forwards nothing to 30880).
+# Egress is in infrastructure/namespaces/ops/allow-dashboard-egress.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: homelab-hub-ingress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: homelab-hub}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.168.1.0/24}
+        - ipBlock: {cidr: 100.64.0.0/10}    # Tailscale
+        # This app's Tailscale proxy (tailscale-ingress.yaml), and no other pod in that namespace.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: tailscale}
+          podSelector:
+            matchLabels:
+              tailscale.com/parent-resource: homelab-hub-tailnet
+              tailscale.com/parent-resource-ns: ops
+      ports:
+        - {protocol: TCP, port: 9880}

@@ -1,0 +1,9 @@
+# Projects, one folder per namespace (plan Phase 6). Each project folder holds its dev pod
+# (templates/agent) and, where it has one, its running service.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ops
+  - games
+  - ml
+  - tailscale        # ProxyClass for the Tailscale operator's proxies (needs its CRDs)

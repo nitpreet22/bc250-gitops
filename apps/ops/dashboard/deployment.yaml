@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homelab-hub
+spec:
+  replicas: 1
+  strategy: {type: Recreate}          # one writer for the state volume
+  selector:
+    matchLabels: {app.kubernetes.io/name: homelab-hub}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: homelab-hub}
+    spec:
+      # bc250-2 (brain): bc250-1 is reserved for GPU work since the Phase 0 role change. The board's
+      # address is also the source the agents see, and the LAN URL uses it (externalTrafficPolicy).
+      nodeSelector: {role: brain}
+      priorityClassName: service
+      enableServiceLinks: false
+      serviceAccountName: homelab-hub   # read-only (rbac.yaml), for the Cluster view
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532                 # distroless "nonroot"
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: hub
+          image: registry.homelab.lan/homelab-hub:2026-10-29.1
+          args: [-config, /etc/homelab/hub.json, -token-file, /run/homelab/agent-token]
+          ports:
+            - {name: http, containerPort: 9880}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 20m, memory: 48Mi}
+            limits: {cpu: 500m, memory: 128Mi}   # same memory cap as the systemd unit
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/homelab, readOnly: true}
+            - {name: token, mountPath: /run/homelab, readOnly: true}
+            - {name: state, mountPath: /var/lib/homelab-hub}
+      volumes:
+        - name: config
+          configMap: {name: homelab-hub-config}
+        - name: token
+          secret:
+            secretName: homelab-agent-token
+            defaultMode: 0440            # group-readable for fsGroup 65532
+        - name: state
+          persistentVolumeClaim: {claimName: homelab-hub-state}
