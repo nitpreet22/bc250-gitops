@@ -1,0 +1,34 @@
+# Phase 8 load: one GPU Job through the GPU queue, running 06_bc250_server's Vulkan compute load
+# (bench/gpu_burn) for 1200 seconds (its first argument). The binary and shader come from ConfigMap `gpu-burn`;
+# the image is the desktop image, which already has Mesa's Vulkan driver for the BC-250.
+#
+#   kubectl -n ml create configmap gpu-burn --from-file=gpu_burn --from-file=gpu_burn.spv
+#   kubectl -n ml apply -f tests/gpu-burn-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-burn
+  labels: {homelab.lan/check: load}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {homelab.lan/check: load}
+    spec:
+      restartPolicy: Never
+      priorityClassName: batch
+      # bc250-1: an on-demand board, so the load has it to itself. Power it on first.
+      nodeSelector: {kubernetes.io/hostname: bc250-1}
+      containers:
+        - name: gpu-burn
+          image: registry.homelab.lan/desktop:2026-10-28.1
+          command: [/bench/gpu_burn, "1200", /bench/gpu_burn.spv]
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi, devic.es/gpu: 1}
+          volumeMounts:
+            - {name: bench, mountPath: /bench}
+      volumes:
+        - name: bench
+          configMap: {name: gpu-burn, defaultMode: 0555}

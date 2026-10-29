@@ -1,0 +1,13 @@
+# Never commit secrets: decrypted SOPS files, kubeconfigs, age keys, tokens.
+*.dec.yaml
+*.agekey
+age.key
+kubeconfig*
+*.token
+.env
+.env.*
+# Local scratch
+*.log
+
+# Python bytecode from running scripts/tests locally
+__pycache__/
